@@ -73,37 +73,38 @@ function connectPeer(ws, isHost, onReady) {
    ホーム画面
    ============================================================ */
 function HomeScreen({ onStartBattle, onMatched }) {
-  const [code, setCode] = useState("");
   const [soundOn, setSoundOn] = useState(true);
-  // idle | hosting | joining | join-failed | bot
+  // idle | host-rules | hosting | room-list | joining | join-failed
   const [phase, setPhase] = useState("idle");
+  const [rooms, setRooms] = useState([]);
   const socketRef = useRef(null);
+  const listTimerRef = useRef(null);
 
   const cleanupSocket = () => {
+    if (listTimerRef.current) { clearInterval(listTimerRef.current); listTimerRef.current = null; }
     if (socketRef.current) {
       try { socketRef.current.close(); } catch {}
       socketRef.current = null;
     }
   };
 
-  const startHost = () => {
-    if (!code.trim()) return;
+  const startHosting = (rules) => {
     cleanupSocket();
-    console.log("[home] hosting, connecting to", SERVER_URL);
+    console.log("[home] hosting, rules =", rules);
     setPhase("hosting");
     const socket = new WebSocket(SERVER_URL);
     socketRef.current = socket;
 
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "host", code: code.trim() }));
+      socket.send(JSON.stringify({ type: "host", rules }));
     };
     socket.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "matched") {
-        console.log("[home] matched as host");
+        console.log("[home] matched as host, rules =", msg.rules);
         socketRef.current = null;
-        onMatched(socket, true);
+        onMatched(socket, true, msg.rules);
       }
     };
     socket.onerror = (e) => {
@@ -112,43 +113,57 @@ function HomeScreen({ onStartBattle, onMatched }) {
     };
   };
 
-  const startJoin = () => {
-    if (!code.trim()) return;
+  const openRoomList = () => {
     cleanupSocket();
-    console.log("[home] joining, connecting to", SERVER_URL);
-    setPhase("joining");
+    console.log("[home] opening room list");
+    setPhase("room-list");
+    setRooms([]);
     const socket = new WebSocket(SERVER_URL);
     socketRef.current = socket;
 
+    const requestList = () => {
+      if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: "list-rooms" }));
+    };
+
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "join", code: code.trim() }));
+      requestList();
+      listTimerRef.current = setInterval(requestList, 2000);
     };
     socket.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.type === "matched") {
-        console.log("[home] matched as guest");
+      if (msg.type === "room-list") {
+        setRooms(msg.rooms || []);
+      } else if (msg.type === "matched") {
+        console.log("[home] matched as guest, rules =", msg.rules);
+        if (listTimerRef.current) { clearInterval(listTimerRef.current); listTimerRef.current = null; }
         socketRef.current = null;
-        onMatched(socket, false);
+        onMatched(socket, false, msg.rules);
       } else if (msg.type === "join-failed") {
         console.log("[home] join failed");
-        cleanupSocket();
         setPhase("join-failed");
       }
     };
     socket.onerror = (e) => {
-      console.log("[home] join socket error", e);
-      cleanupSocket();
-      setPhase("join-failed");
+      console.log("[home] list socket error", e);
+      setPhase("idle");
     };
   };
 
-  const cancelHosting = () => {
+  const joinRoom = (roomId) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== socket.OPEN) return;
+    if (listTimerRef.current) { clearInterval(listTimerRef.current); listTimerRef.current = null; }
+    setPhase("joining");
+    socket.send(JSON.stringify({ type: "join-room", roomId }));
+  };
+
+  const cancel = () => {
     cleanupSocket();
     setPhase("idle");
   };
 
-  useEffect(() => cleanupSocket, []); // アンマウント時に念のため後片付け
+  useEffect(() => cleanupSocket, []); // アンマウント時の後片付け
 
   return (
     <div
@@ -159,17 +174,13 @@ function HomeScreen({ onStartBattle, onMatched }) {
         @import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
         @keyframes ringSpin { to { transform: rotate(360deg); } }
         .neon-btn:active { transform: scale(0.98); }
-        .code-input:focus {
-          border-color: rgba(95,212,224,.55);
-          box-shadow: 0 0 0 3px rgba(95,212,224,.12);
-        }
         @media (prefers-reduced-motion: reduce) {
           .search-ring { animation: none !important; }
         }
       `}</style>
 
       <div className="w-full max-w-sm">
-        <div className="mb-12 text-center">
+        <div className="mb-10 text-center">
           <h1
             className="text-3xl font-bold sm:text-4xl"
             style={{ color: "#eef0f3", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
@@ -178,95 +189,139 @@ function HomeScreen({ onStartBattle, onMatched }) {
           </h1>
         </div>
 
-        <div className="mb-4">
-          <label htmlFor="passcode" className="mb-2 block text-xs font-medium" style={{ color: "#82878e" }}>
-            合言葉
-          </label>
-          <input
-            id="passcode"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            disabled={phase === "hosting" || phase === "joining"}
-            placeholder="合言葉を入力してください"
-            className="code-input w-full rounded-lg border px-4 py-3 text-base outline-none transition-shadow duration-150"
-            style={{
-              background: "#14171d",
-              borderColor: "rgba(255,255,255,.1)",
-              color: "#eef0f3",
-              fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-            }}
-          />
-        </div>
-
-        {(phase === "idle" || phase === "join-failed") && (
-          <div className="mb-2 flex gap-2">
+        {phase === "idle" && (
+          <>
+            <div className="mb-2 flex gap-2">
+              <button
+                onClick={() => setPhase("host-rules")}
+                className="neon-btn flex-1 rounded-lg px-4 py-3.5 text-base font-bold transition-transform duration-100"
+                style={{ background: ACCENT, color: "#0b0d11", boxShadow: "0 0 16px rgba(95,212,224,.25)" }}
+              >
+                ホストする
+              </button>
+              <button
+                onClick={openRoomList}
+                className="neon-btn flex-1 rounded-lg border px-4 py-3.5 text-base font-bold transition-transform duration-100"
+                style={{ borderColor: "rgba(255,255,255,.2)", color: "#eef0f3", background: "#14171d" }}
+              >
+                参加する
+              </button>
+            </div>
             <button
-              onClick={startHost}
-              disabled={!code.trim()}
-              className="neon-btn flex-1 rounded-lg px-4 py-3.5 text-base font-bold transition-transform duration-100 disabled:opacity-40"
-              style={{ background: ACCENT, color: "#0b0d11", boxShadow: "0 0 16px rgba(95,212,224,.25)" }}
+              onClick={onStartBattle}
+              className="mb-6 w-full text-center text-xs underline decoration-dotted"
+              style={{ color: "#6b7178" }}
             >
-              ホストする
+              相手がいない？ BOTと対戦する
             </button>
-            <button
-              onClick={startJoin}
-              disabled={!code.trim()}
-              className="neon-btn flex-1 rounded-lg border px-4 py-3.5 text-base font-bold transition-transform duration-100 disabled:opacity-40"
-              style={{ borderColor: "rgba(255,255,255,.2)", color: "#eef0f3", background: "#14171d" }}
-            >
-              参加する
+          </>
+        )}
+
+        {phase === "host-rules" && (
+          <div className="mb-6">
+            <p className="mb-3 text-center text-xs" style={{ color: "#82878e" }}>この部屋のルールを選んでください</p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => startHosting("none")}
+                className="neon-btn rounded-lg border px-4 py-3 text-left transition-transform duration-100"
+                style={{ background: "#14171d", borderColor: "rgba(255,255,255,.1)" }}
+              >
+                <div className="text-sm font-bold" style={{ color: "#eef0f3" }}>能力なし</div>
+                <div className="mt-0.5 text-xs" style={{ color: "#82878e" }}>シンプルな対戦</div>
+              </button>
+              <button
+                onClick={() => startHosting("perks")}
+                className="neon-btn rounded-lg border px-4 py-3 text-left transition-transform duration-100"
+                style={{ background: "#14171d", borderColor: "rgba(255,255,255,.1)" }}
+              >
+                <div className="text-sm font-bold" style={{ color: ACCENT }}>能力あり</div>
+                <div className="mt-0.5 text-xs" style={{ color: "#82878e" }}>加護・雪鉄砲・TP弾・ロケットランチャーから選べる</div>
+              </button>
+            </div>
+            <button onClick={cancel} className="mt-3 w-full text-center text-xs" style={{ color: "#6b7178" }}>
+              戻る
             </button>
           </div>
         )}
 
         {phase === "hosting" && (
-          <button
-            onClick={cancelHosting}
-            className="neon-btn mb-2 flex w-full items-center justify-center gap-3 rounded-lg border px-6 py-3.5 text-base font-bold transition-transform duration-100"
-            style={{ borderColor: "rgba(255,255,255,.12)", color: "#c7cbd1", background: "#14171d" }}
-          >
-            <span
-              className="search-ring inline-block h-4 w-4 rounded-full"
-              style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
-            />
-            相手の参加を待っています（タップでキャンセル）
-          </button>
+          <div className="mb-6">
+            <button
+              onClick={cancel}
+              className="neon-btn mb-2 flex w-full items-center justify-center gap-3 rounded-lg border px-6 py-3.5 text-base font-bold transition-transform duration-100"
+              style={{ borderColor: "rgba(255,255,255,.12)", color: "#c7cbd1", background: "#14171d" }}
+            >
+              <span
+                className="search-ring inline-block h-4 w-4 rounded-full"
+                style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
+              />
+              相手を待っています（タップでキャンセル）
+            </button>
+            <p className="text-center text-xs" style={{ color: "#6b7178" }}>
+              相手が「参加する」から選んでくれるのを待っています
+            </p>
+          </div>
+        )}
+
+        {phase === "room-list" && (
+          <div className="mb-6">
+            <p className="mb-3 text-center text-xs" style={{ color: "#82878e" }}>参加できる部屋</p>
+            {rooms.length === 0 && (
+              <p className="mb-3 text-center text-xs" style={{ color: "#6b7178" }}>
+                今、待機中の部屋はありません
+              </p>
+            )}
+            <div className="flex flex-col gap-2">
+              {rooms.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => joinRoom(r.id)}
+                  className="neon-btn flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-transform duration-100"
+                  style={{ background: "#14171d", borderColor: "rgba(255,255,255,.1)" }}
+                >
+                  <span className="text-sm font-bold" style={{ color: "#eef0f3" }}>部屋 #{r.id}</span>
+                  <span className="text-xs" style={{ color: r.rules === "perks" ? ACCENT : "#82878e" }}>
+                    {r.rules === "perks" ? "能力あり" : "能力なし"}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <button onClick={cancel} className="mt-3 w-full text-center text-xs" style={{ color: "#6b7178" }}>
+              戻る
+            </button>
+          </div>
         )}
 
         {phase === "joining" && (
-          <button
-            disabled
-            className="neon-btn mb-2 flex w-full items-center justify-center gap-3 rounded-lg border px-6 py-3.5 text-base font-bold"
-            style={{ borderColor: "rgba(255,255,255,.12)", color: "#c7cbd1", background: "#14171d" }}
-          >
-            <span
-              className="search-ring inline-block h-4 w-4 rounded-full"
-              style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
-            />
-            接続しています…
-          </button>
+          <div className="mb-6">
+            <button
+              disabled
+              className="neon-btn mb-2 flex w-full items-center justify-center gap-3 rounded-lg border px-6 py-3.5 text-base font-bold"
+              style={{ borderColor: "rgba(255,255,255,.12)", color: "#c7cbd1", background: "#14171d" }}
+            >
+              <span
+                className="search-ring inline-block h-4 w-4 rounded-full"
+                style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
+              />
+              接続しています…
+            </button>
+          </div>
         )}
 
-        {phase === "hosting" && (
-          <p className="mb-6 text-center text-xs" style={{ color: "#6b7178" }}>
-            この合言葉を相手に伝えて、「参加する」を押してもらってください
-          </p>
-        )}
         {phase === "join-failed" && (
-          <p className="mb-6 text-center text-xs" style={{ color: "#ff9a8a" }}>
-            この合言葉のホストが見つかりませんでした。相手が先に「ホストする」を押しているか確認してください
-          </p>
+          <div className="mb-6">
+            <p className="mb-3 text-center text-xs" style={{ color: "#ff9a8a" }}>
+              その部屋にはもう入れませんでした（相手が先に埋まったか、いなくなったようです）
+            </p>
+            <button
+              onClick={openRoomList}
+              className="neon-btn w-full rounded-lg px-4 py-3 text-sm font-bold"
+              style={{ background: ACCENT, color: "#0b0d11" }}
+            >
+              一覧に戻る
+            </button>
+          </div>
         )}
-        {(phase === "idle" || phase === "join-failed") && (
-          <button
-            onClick={onStartBattle}
-            className="mb-6 w-full text-center text-xs underline decoration-dotted"
-            style={{ color: "#6b7178" }}
-          >
-            相手がいない？ BOTと対戦する
-          </button>
-        )}
-        {(phase === "hosting" || phase === "joining") && <div className="mb-8" />}
 
         <div className="flex items-center justify-between rounded-lg px-4 py-3" style={{ background: "#14171d" }}>
           <span className="text-sm font-medium" style={{ color: "#c7cbd1" }}>サウンド</span>
@@ -362,6 +417,67 @@ function PerkSelectScreen({ onSelect }) {
 }
 
 /* ============================================================
+   オンライン対戦の能力選択（お互いの選択が揃うまで待つ）
+   ============================================================ */
+function OnlinePerkSelectScreen({ ws, onReady }) {
+  const [myChoice, setMyChoice] = useState(null);
+  const [peerChoice, setPeerChoice] = useState(null);
+
+  useEffect(() => {
+    const handler = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "my-perk") setPeerChoice(msg.perk);
+    };
+    ws.addEventListener("message", handler);
+    return () => ws.removeEventListener("message", handler);
+  }, [ws]);
+
+  useEffect(() => {
+    if (myChoice && peerChoice) onReady(myChoice, peerChoice);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myChoice, peerChoice]);
+
+  const select = (id) => {
+    setMyChoice(id);
+    ws.send(JSON.stringify({ type: "my-perk", perk: id }));
+  };
+
+  return (
+    <div
+      className="relative flex min-h-screen w-full items-center justify-center px-5 py-10"
+      style={{ background: "#0b0d11", fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif" }}
+    >
+      <div className="w-full max-w-sm">
+        <h2 className="mb-2 text-center text-xl font-bold" style={{ color: "#eef0f3" }}>
+          サブ能力を選択
+        </h2>
+        <p className="mb-8 text-center text-xs" style={{ color: "#6b7178" }}>
+          {myChoice ? "相手の選択を待っています…" : "1つだけ選んでください。両者が選び終わると対戦が始まります"}
+        </p>
+        <div className="flex flex-col gap-3">
+          {PERKS.map((perk) => (
+            <button
+              key={perk.id}
+              onClick={() => !myChoice && select(perk.id)}
+              disabled={!!myChoice}
+              className="rounded-lg border px-4 py-3 text-left transition-transform duration-100 active:scale-[0.98] disabled:opacity-40"
+              style={{
+                background: myChoice === perk.id ? "rgba(95,212,224,.12)" : "#14171d",
+                borderColor: myChoice === perk.id ? ACCENT : "rgba(255,255,255,.1)",
+              }}
+            >
+              <div className="text-base font-bold" style={{ color: ACCENT }}>{perk.name}</div>
+              <div className="mt-1 text-xs leading-relaxed" style={{ color: "#9aa0a8" }}>{perk.desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    対戦画面
    ============================================================ */
 const C = {
@@ -388,7 +504,7 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const rnd = (a, b) => a + Math.random() * (b - a);
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 
-function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
+function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRematch }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const gRef = useRef(null);
@@ -445,9 +561,20 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     return () => { if (countdownIvRef.current) clearInterval(countdownIvRef.current); };
   }, []);
 
-  /* オンライン対戦の再戦：両者が希望を出したら、接続はそのままに試合だけその場でリセットする */
-  const [iWantRematch, setIWantRematch] = useState(false);
-  const [peerWantsRematch, setPeerWantsRematch] = useState(false);
+  /* オンライン対戦の再戦：両者が「はい」に投票したら、接続はそのままに試合だけリセットする。
+     どちらかが「いいえ」か、10秒以内に投票しなければ、両者とも強制的にホームへ戻す。 */
+  const [myVote, setMyVote] = useState(null); // null | true | false
+  const [peerVote, setPeerVote] = useState(null);
+  const [voteSeconds, setVoteSeconds] = useState(10);
+  const voteTimerRef = useRef(null);
+  const forcedHomeRef = useRef(false);
+
+  function forceHome() {
+    if (forcedHomeRef.current) return;
+    forcedHomeRef.current = true;
+    if (voteTimerRef.current) clearInterval(voteTimerRef.current);
+    onExit();
+  }
 
   function restartMatchInPlace() {
     console.log("[battle] restarting match in place");
@@ -456,29 +583,65 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     lastAckSeq.current = 0;
     inputSeq.current = 0;
     pendingInputs.current = [];
-    setIWantRematch(false);
-    setPeerWantsRematch(false);
-    const freshMaxHp = perk === "blessing" ? BLESSING_HP : BASE_HP;
+    setMyVote(null);
+    setPeerVote(null);
+    const hostPerk = isHost ? perk : peerPerk;
+    const guestPerk = isHost ? peerPerk : perk;
+    const freshMaxHp = (isHost ? hostPerk : guestPerk) === "blessing" ? BLESSING_HP : BASE_HP;
+    const peerMaxHp = (isHost ? guestPerk : hostPerk) === "blessing" ? BLESSING_HP : BASE_HP;
     setUi({
-      hp1: freshMaxHp, hp2: BASE_HP, maxHp1: freshMaxHp, maxHp2: BASE_HP,
+      hp1: freshMaxHp, hp2: peerMaxHp, maxHp1: freshMaxHp, maxHp2: peerMaxHp,
       ammo1: 0, ammo2: 0, winner: null, combo1: 0, weaponCd1: 0, snowImmune2: 0,
     });
     beginCountdown();
   }
 
+  // 投票の10秒タイマー：勝敗が決まった瞬間に始まる
   useEffect(() => {
-    if (iWantRematch && peerWantsRematch) restartMatchInPlace();
+    if (!online || ui.winner === null) return;
+    setVoteSeconds(10);
+    voteTimerRef.current = setInterval(() => {
+      setVoteSeconds((s) => {
+        if (s <= 1) {
+          clearInterval(voteTimerRef.current);
+          voteTimerRef.current = null;
+          // 時間切れ＝自分がまだ投票していなければ「いいえ」扱いにする
+          setMyVote((cur) => {
+            if (cur === null) { sendMsg({ type: "rematch-vote", vote: false }); return false; }
+            return cur;
+          });
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => { if (voteTimerRef.current) clearInterval(voteTimerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [iWantRematch, peerWantsRematch]);
+  }, [ui.winner, online]);
 
-  const requestRematch = () => {
-    if (online) {
-      sendMsg({ type: "rematch" });
-      setIWantRematch(true);
-    } else {
-      onRematch();
-    }
+  useEffect(() => {
+    if (myVote === true && peerVote === true) restartMatchInPlace();
+    else if (myVote === false || peerVote === false) forceHome();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myVote, peerVote]);
+
+  const voteYes = () => {
+    setMyVote(true);
+    sendMsg({ type: "rematch-vote", vote: true });
   };
+  const voteNo = () => {
+    setMyVote(false);
+    sendMsg({ type: "rematch-vote", vote: false });
+  };
+  const requestRematch = online ? voteYes : onRematch; // オフラインBot戦は今まで通り即再戦
+
+  // 通信が切れたら、少し見せてから強制的にホームへ戻す
+  useEffect(() => {
+    if (!disconnected) return;
+    const t = setTimeout(() => forceHome(), 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [disconnected]);
 
   /* 武器ボタン（雪鉄砲・TP弾専用） */
   const weaponBtnRef = useRef(null);
@@ -576,15 +739,19 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
 
   /* ---------- 状態 ---------- */
   function makeState() {
-    const p1Max = perk === "blessing" ? BLESSING_HP : BASE_HP;
+    // players[0]は常にホスト、players[1]は常にゲスト（自分がどちらかで能力を割り当てる）
+    const hostPerk = isHost ? perk : peerPerk;
+    const guestPerk = isHost ? peerPerk : perk;
+    const p0Max = hostPerk === "blessing" ? BLESSING_HP : BASE_HP;
+    const p1Max = guestPerk === "blessing" ? BLESSING_HP : BASE_HP;
     const s = {
       players: [
         { id: 0, x: L.AR.x + L.cell * 0.9, y: L.AR.y + L.AR.h - L.cell * 0.9, vx: 0, vy: 0, kx: 0, ky: 0,
-          hp: p1Max, maxHp: p1Max, ammo: 0, color: C.p1, bot: false, flash: 0, face: -Math.PI / 4,
-          perk: perk || null, combo: 0, weaponCd: 0, frozen: 0, tpBonusT: 0, snowImmuneT: 0 },
+          hp: p0Max, maxHp: p0Max, ammo: 0, color: C.p1, bot: false, flash: 0, face: -Math.PI / 4,
+          perk: hostPerk || null, combo: 0, weaponCd: 0, frozen: 0, tpBonusT: 0, snowImmuneT: 0 },
         { id: 1, x: L.AR.x + L.AR.w - L.cell * 0.9, y: L.AR.y + L.cell * 0.9, vx: 0, vy: 0, kx: 0, ky: 0,
-          hp: BASE_HP, maxHp: BASE_HP, ammo: 0, color: C.p2, bot: true, flash: 0, face: (Math.PI * 3) / 4,
-          think: 0, wander: { x: 0, y: 0 }, aimHold: 0, perk: null, combo: 0, weaponCd: 0, frozen: 0, tpBonusT: 0, snowImmuneT: 0 },
+          hp: p1Max, maxHp: p1Max, ammo: 0, color: C.p2, bot: true, flash: 0, face: (Math.PI * 3) / 4,
+          think: 0, wander: { x: 0, y: 0 }, aimHold: 0, perk: guestPerk || null, combo: 0, weaponCd: 0, frozen: 0, tpBonusT: 0, snowImmuneT: 0 },
       ],
       bullets: [], items: [], booms: [], shards: [], poofs: [], dmgPopups: [],
       spawnT: 0, over: null, shake: 0, t: 0,
@@ -1073,7 +1240,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       try { msg = JSON.parse(ev.data); } catch { return; }
       console.log("[battle] recv", msg.type, isHost ? "(as host)" : "(as guest)");
       const s = gRef.current;
-      if (msg.type === "rematch") { setPeerWantsRematch(true); return; }
+      if (msg.type === "rematch-vote") { setPeerVote(msg.vote); return; }
       if (isHost) {
         const p2 = s.players[1];
         if (msg.type === "move") {
@@ -1101,6 +1268,12 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       });
       ws.onclose = () => { console.log("[battle] ws closed"); setDisconnected(true); };
       ws.onerror = (e) => console.log("[battle] ws error", e);
+      // P2P接続時はゲームメッセージがwsを通らなくなるため、相手退出の通知だけは別枠で監視する
+      ws.addEventListener("message", (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === "peer-left") { console.log("[battle] peer-left"); setDisconnected(true); }
+      });
     }
 
     /* タップ＝即発射／移動しながら第2の指で長押し＝照準 */
@@ -1965,44 +2138,73 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
           <div className="text-4xl font-bold" style={{ color: ui.winner === 0 ? C.p1 : C.p2 }}>
             {ui.winner === 0 ? "あなたの勝ち" : online ? "相手の勝ち" : "ボットの勝ち"}
           </div>
-          {online && peerWantsRematch && !iWantRematch && (
-            <div className="text-xs" style={{ color: ACCENT }}>相手が再戦を希望しています</div>
-          )}
-          <div className="flex gap-3">
-            <button
-              onClick={requestRematch}
-              disabled={online && iWantRematch}
-              className="flex items-center gap-2 rounded-lg px-6 py-3 font-bold focus:outline-none focus:ring-2 disabled:opacity-60"
-              style={{ background: ACCENT, color: "#0b0d11" }}
-            >
-              {online && iWantRematch && (
-                <span
-                  className="search-ring inline-block h-3.5 w-3.5 rounded-full"
-                  style={{ border: "2px solid rgba(11,13,17,.25)", borderTopColor: "#0b0d11", animation: "ringSpin .8s linear infinite" }}
-                />
+
+          {online ? (
+            <>
+              <div className="text-sm" style={{ color: "#c7cbd1" }}>
+                もう一度プレイしますか？
+                {myVote === null && <span style={{ color: ACCENT }}> （あと{voteSeconds}秒）</span>}
+              </div>
+              {myVote === null ? (
+                <div className="flex gap-3">
+                  <button
+                    onClick={voteYes}
+                    className="rounded-lg px-6 py-3 font-bold focus:outline-none focus:ring-2"
+                    style={{ background: ACCENT, color: "#0b0d11" }}
+                  >
+                    はい
+                  </button>
+                  <button
+                    onClick={voteNo}
+                    className="rounded-lg border px-6 py-3 font-bold focus:outline-none focus:ring-2"
+                    style={{ borderColor: "rgba(255,255,255,.25)", color: "#eef0f3", background: "transparent" }}
+                  >
+                    いいえ
+                  </button>
+                </div>
+              ) : myVote === true ? (
+                <div className="flex items-center gap-2 text-xs" style={{ color: "#9aa0a8" }}>
+                  <span
+                    className="search-ring inline-block h-3.5 w-3.5 rounded-full"
+                    style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
+                  />
+                  相手の返事を待っています…
+                </div>
+              ) : (
+                <div className="text-xs" style={{ color: "#9aa0a8" }}>ホームに戻ります…</div>
               )}
-              {online && iWantRematch ? "相手を待っています…" : "もう一度プレイ"}
-            </button>
-            <button
-              onClick={onExit}
-              className="rounded-lg border px-6 py-3 font-bold focus:outline-none focus:ring-2"
-              style={{ borderColor: "rgba(255,255,255,.25)", color: "#eef0f3", background: "transparent" }}
-            >
-              ホームに戻る
-            </button>
-          </div>
+            </>
+          ) : (
+            <div className="flex gap-3">
+              <button
+                onClick={requestRematch}
+                className="rounded-lg px-6 py-3 font-bold focus:outline-none focus:ring-2"
+                style={{ background: ACCENT, color: "#0b0d11" }}
+              >
+                もう一度プレイ
+              </button>
+              <button
+                onClick={onExit}
+                className="rounded-lg border px-6 py-3 font-bold focus:outline-none focus:ring-2"
+                style={{ borderColor: "rgba(255,255,255,.25)", color: "#eef0f3", background: "transparent" }}
+              >
+                ホームに戻る
+              </button>
+            </div>
+          )}
         </div>
       )}
 
       {disconnected && ui.winner === null && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-black/70">
           <div className="text-xl font-bold" style={{ color: "#eef0f3" }}>相手が切断しました</div>
+          <div className="text-xs" style={{ color: "#9aa0a8" }}>まもなくホームに戻ります…</div>
           <button
             onClick={onExit}
             className="rounded-lg px-6 py-3 font-bold focus:outline-none focus:ring-2"
             style={{ background: ACCENT, color: "#0b0d11" }}
           >
-            ホームに戻る
+            今すぐホームに戻る
           </button>
         </div>
       )}
@@ -2014,34 +2216,40 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
    アプリ本体（画面遷移）
    ============================================================ */
 export default function App() {
-  const [screen, setScreen] = useState("home"); // home | perks | battle
+  const [screen, setScreen] = useState("home"); // home | perks | online-perks | battle
   const [matchId, setMatchId] = useState(0);
-  const [perk, setPerk] = useState(null);
-  const [netMatch, setNetMatch] = useState(null); // { ws, isHost } | null
+  const [perk, setPerk] = useState(null); // Bot対戦 or オンラインでの自分の選択
+  const [peerPerk, setPeerPerk] = useState(null); // オンラインでの相手の選択
+  const [netMatch, setNetMatch] = useState(null); // { ws, isHost, rules } | null
 
   const goPerks = () => setScreen("perks");
   const choosePerk = (id) => {
     setPerk(id);
+    setPeerPerk(null);
     setNetMatch(null);
     setMatchId((m) => m + 1);
     setScreen("battle");
   };
-  const onMatched = (ws, isHost) => {
-    setPerk(null); // オンライン対戦は今のところサブ能力なし
-    setNetMatch({ ws, isHost });
+  const onMatched = (ws, isHost, rules) => {
+    setNetMatch({ ws, isHost, rules });
+    if (rules === "perks") {
+      setScreen("online-perks");
+    } else {
+      setPerk(null);
+      setPeerPerk(null);
+      setMatchId((m) => m + 1);
+      setScreen("battle");
+    }
+  };
+  const onlinePerksReady = (myChoice, peerChoice) => {
+    setPerk(myChoice);
+    setPeerPerk(peerChoice);
     setMatchId((m) => m + 1);
     setScreen("battle");
   };
   const rematch = () => {
-    if (netMatch) {
-      // オンライン対戦の再戦は今回はホームに戻す形にしている
-      netMatch.ws.close();
-      setNetMatch(null);
-      setScreen("home");
-      return;
-    }
     setMatchId((m) => m + 1);
-    setScreen("battle"); // 同じ能力のまま再戦
+    setScreen("battle"); // Bot対戦のみ：同じ能力のまま再戦
   };
   const goHome = () => {
     if (netMatch) netMatch.ws.close();
@@ -2051,10 +2259,12 @@ export default function App() {
 
   if (screen === "home") return <HomeScreen onStartBattle={goPerks} onMatched={onMatched} />;
   if (screen === "perks") return <PerkSelectScreen onSelect={choosePerk} />;
+  if (screen === "online-perks") return <OnlinePerkSelectScreen ws={netMatch.ws} onReady={onlinePerksReady} />;
   return (
     <BattleScreen
       key={matchId}
       perk={perk}
+      peerPerk={peerPerk}
       ws={netMatch?.ws ?? null}
       isHost={netMatch?.isHost ?? true}
       onExit={goHome}
