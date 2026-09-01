@@ -332,6 +332,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
   const online = !!ws;
   const chanRef = useRef(null); // 実際にゲームデータを流すチャネル（P2Pか中継か）
   const [netStatus, setNetStatus] = useState("connecting"); // connecting | p2p | relay
+  const netStatusRef = useRef("connecting"); // ループ内のログ表示用（stateはクロージャに古い値が残るため）
   const sendMsg = (obj) => {
     const ch = chanRef.current;
     if (!ch) return;
@@ -629,7 +630,11 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       })),
       items: s.items.map((it) => ({ ...toN(it.x, it.y), type: it.type, fuse: it.fuse, born: it.born })),
       booms: s.booms.map((b) => ({ ...toN(b.x, b.y), t: b.t, col: b.col })),
-      dmgPopups: s.dmgPopups.map((d) => ({ ...toN(d.x, d.y), t: d.t, life: d.life, text: d.text, color: d.color })),
+      dmgPopups: s.dmgPopups.map((d) => ({
+        ...toN(d.x, d.y), vx: d.vx / (L.AR.w || 1), vy: d.vy / (L.AR.h || 1),
+        t: d.t, life: d.life, text: d.text, color: d.color,
+      })),
+      poofs: s.poofs.map((f) => ({ ...toN(f.x, f.y), t: f.t, life: f.life, size: f.size / (L.AR.w || 1), c: f.c })),
     };
   }
 
@@ -705,11 +710,19 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
 
     s.dmgPopups = payload.dmgPopups.map((d) => {
       const pos = denormPos(d.nx, d.ny);
-      return { x: pos.x, y: pos.y, t: d.t, life: d.life, text: d.text, color: d.color };
+      return {
+        x: pos.x, y: pos.y,
+        vx: (d.vx || 0) * L.AR.w, vy: (d.vy || 0) * L.AR.h,
+        t: d.t, life: d.life, text: d.text, color: d.color,
+      };
+    });
+
+    s.poofs = (payload.poofs || []).map((f) => {
+      const pos = denormPos(f.nx, f.ny);
+      return { x: pos.x, y: pos.y, vx: 0, vy: 0, t: f.t, life: f.life, size: (f.size || 0) * L.AR.w, c: f.c };
     });
 
     s.shards = [];
-    s.poofs = [];
   }
 
   // ホスト・ゲスト共通で使う「入力1回分ぶんの移動」。同じ入力なら必ず同じ結果になる（予測の再現性のため）
@@ -973,6 +986,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       connectPeer(ws, isHost, (kind, transport) => {
         console.log("[battle] transport ready:", kind);
         setNetStatus(kind);
+        netStatusRef.current = kind;
         transport.onmessage = handleGameMessage;
         chanRef.current = { send: (json) => transport.send(json) };
         if (kind === "p2p") {
@@ -1356,7 +1370,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
             }
             netSendCount.current += 1;
             if (netSendCount.current <= 5 || netSendCount.current % 60 === 0) {
-              console.log("[battle] sent #", netSendCount.current, isHost ? "snapshot" : "move/aim", "via", netStatus);
+              console.log("[battle] sent #", netSendCount.current, isHost ? "snapshot" : "move/aim", "via", netStatusRef.current);
             }
           } catch (err) {
             console.log("[battle] ws.send failed", err);
