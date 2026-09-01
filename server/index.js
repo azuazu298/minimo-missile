@@ -71,17 +71,18 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    if (msg.type === "state" && ws.roomCode) {
-      const room = rooms.get(ws.roomCode);
-      if (!room) return;
-      for (const peer of room) {
-        if (peer !== ws) send(peer, { type: "state", from: ws.playerIndex, payload: msg.payload });
-      }
+    if (msg.type === "leave") {
+      leaveRoom(ws);
       return;
     }
 
-    if (msg.type === "leave") {
-      leaveRoom(ws);
+    // join/leave以外のメッセージは、種類を問わず同じ部屋の相手にそのまま転送する
+    if (ws.roomCode) {
+      const room = rooms.get(ws.roomCode);
+      if (!room) return;
+      for (const peer of room) {
+        if (peer !== ws) send(peer, msg);
+      }
       return;
     }
   });
