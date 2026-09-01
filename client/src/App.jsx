@@ -1,18 +1,52 @@
 import { useRef, useEffect, useState } from "react";
 
 const ACCENT = "#5fd4e0"; // アプリ全体で使う唯一のネオンアクセント
+const SERVER_URL = "wss://minimo-missile-server.onrender.com";
 
 /* ============================================================
    ホーム画面
    ============================================================ */
-function HomeScreen({ onStartBattle }) {
+function HomeScreen({ onStartBattle, onMatched }) {
   const [code, setCode] = useState("");
   const [soundOn, setSoundOn] = useState(true);
   const [phase, setPhase] = useState("idle"); // idle | searching | bot
 
   const startMatch = () => {
     setPhase("searching");
-    setTimeout(() => setPhase("bot"), 1300);
+    let settled = false;
+    const socket = new WebSocket(SERVER_URL);
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.close();
+      setPhase("bot");
+    }, 8000);
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: "join", code: code.trim() || "default" }));
+    };
+    socket.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "matched" && !settled) {
+        settled = true;
+        clearTimeout(timeout);
+        onMatched(socket, msg.you === 0);
+      } else if (msg.type === "full" && !settled) {
+        settled = true;
+        clearTimeout(timeout);
+        socket.close();
+        setPhase("idle");
+        alert("その合言葉はすでに2人使っています。別の合言葉を試してください。");
+      }
+    };
+    socket.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      setPhase("bot");
+    };
   };
 
   return (
@@ -212,10 +246,14 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const rnd = (a, b) => a + Math.random() * (b - a);
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 
-function BattleScreen({ perk, onExit, onRematch }) {
+function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const gRef = useRef(null);
+  const online = !!ws;
+  const netInput = useRef({ moveDx: 0, moveDy: 0, aimDx: 0, aimDy: 0, aimActive: false });
+  const sendAccum = useRef(0);
+  const [disconnected, setDisconnected] = useState(false);
   const initialMaxHp = perk === "blessing" ? BLESSING_HP : BASE_HP;
   const [ui, setUi] = useState({
     hp1: initialMaxHp, hp2: BASE_HP, maxHp1: initialMaxHp, maxHp2: BASE_HP,
@@ -287,12 +325,16 @@ function BattleScreen({ perk, onExit, onRematch }) {
     if (!s || s.over || phaseRef.current !== "playing") return;
     const p1 = s.players[0];
     if (p1.frozen > 0) return;
-    if (moved) {
-      if (Math.hypot(dx, dy) > 0.2) fireWeapon(s, p1, dx, dy);
-    } else {
-      // タップ：今向いている方向にそのまま発射
-      fireWeapon(s, p1, Math.cos(p1.face), Math.sin(p1.face));
-    }
+
+    const dir = moved && Math.hypot(dx, dy) > 0.2
+      ? { dx, dy }
+      : !moved
+        ? { dx: Math.cos(p1.face), dy: Math.sin(p1.face) }
+        : null;
+    if (!dir) return;
+
+    if (online && !isHost) ws.send(JSON.stringify({ type: "weaponfire", dx: dir.dx, dy: dir.dy }));
+    else fireWeapon(s, p1, dir.dx, dir.dy);
   }
 
   /* レイアウト（画面サイズに合わせて毎回計算） */
@@ -472,6 +514,96 @@ function BattleScreen({ perk, onExit, onRematch }) {
     });
   }
 
+  /* ---------- オンライン対戦用の通信ヘルパー ---------- */
+  function normPos(x, y) {
+    return { nx: (x - L.AR.x) / L.AR.w, ny: (y - L.AR.y) / L.AR.h };
+  }
+  function denormPos(nx, ny) {
+    return { x: L.AR.x + nx * L.AR.w, y: L.AR.y + ny * L.AR.h };
+  }
+
+  // ホスト側：自分の計算結果をゲストに送る用に、正規化座標のスナップショットを作る
+  function serializeState(s) {
+    const toN = (x, y) => normPos(x, y);
+    return {
+      t: s.t, over: s.over, shake: s.shake,
+      players: s.players.map((p) => ({
+        ...toN(p.x, p.y), hp: p.hp, maxHp: p.maxHp, ammo: p.ammo, face: p.face,
+        flash: p.flash, frozen: p.frozen, perk: p.perk, combo: p.combo, weaponCd: p.weaponCd,
+        snowImmuneT: p.snowImmuneT, tpBonusT: p.tpBonusT,
+      })),
+      bullets: s.bullets.map((b) => ({
+        ...toN(b.x, b.y), owner: b.owner, kind: b.kind,
+        trail: b.trail.map((t) => toN(t.x, t.y)),
+      })),
+      items: s.items.map((it) => ({ ...toN(it.x, it.y), type: it.type, fuse: it.fuse, born: it.born })),
+      booms: s.booms.map((b) => ({ ...toN(b.x, b.y), t: b.t, col: b.col })),
+      dmgPopups: s.dmgPopups.map((d) => ({ ...toN(d.x, d.y), t: d.t, life: d.life, text: d.text, color: d.color })),
+    };
+  }
+
+  // ゲスト側：ホストから届いたスナップショットを、自分が常にplayers[0]になるよう
+  // 入れ替えながら画面用の状態に反映する
+  function applySnapshot(payload) {
+    const s = gRef.current;
+    if (!s || !payload) return;
+    s.t = payload.t;
+    s.over = payload.over;
+    s.shake = payload.shake || 0;
+
+    const swapped = [payload.players[1], payload.players[0]];
+    s.players = swapped.map((p, i) => {
+      const pos = denormPos(p.nx, p.ny);
+      const prev = s.players[i] || {};
+      return {
+        ...prev,
+        id: i, x: pos.x, y: pos.y, hp: p.hp, maxHp: p.maxHp, ammo: p.ammo, face: p.face,
+        flash: p.flash, frozen: p.frozen, perk: p.perk, combo: p.combo, weaponCd: p.weaponCd,
+        snowImmuneT: p.snowImmuneT, tpBonusT: p.tpBonusT, color: i === 0 ? C.p1 : C.p2,
+      };
+    });
+
+    s.bullets = payload.bullets.map((b) => {
+      const pos = denormPos(b.nx, b.ny);
+      return {
+        x: pos.x, y: pos.y, owner: b.owner === 0 ? 1 : 0, kind: b.kind,
+        trail: (b.trail || []).map((t) => denormPos(t.nx, t.ny)),
+        vx: 0, vy: 0, t: 0, obstacleHits: 0,
+      };
+    });
+
+    s.items = payload.items.map((it) => {
+      const pos = denormPos(it.nx, it.ny);
+      return { type: it.type, x: pos.x, y: pos.y, fuse: it.fuse, born: it.born, kx: 0, ky: 0 };
+    });
+
+    s.booms = payload.booms.map((b) => {
+      const pos = denormPos(b.nx, b.ny);
+      return { x: pos.x, y: pos.y, t: b.t, col: b.col };
+    });
+
+    s.dmgPopups = payload.dmgPopups.map((d) => {
+      const pos = denormPos(d.nx, d.ny);
+      return { x: pos.x, y: pos.y, t: d.t, life: d.life, text: d.text, color: d.color };
+    });
+
+    s.shards = [];
+    s.poofs = [];
+  }
+
+  // ホスト側：ゲストから届いた入力状態をもとに、p2（ゲスト）を動かす（Botの代わり）
+  function applyRemoteInput(p2) {
+    const ni = netInput.current;
+    let mx = ni.moveDx, my = ni.moveDy;
+    const ml = Math.hypot(mx, my);
+    if (ml > 1) { mx /= ml; my /= ml; }
+    p2.vx = mx * L.SPEED;
+    p2.vy = my * L.SPEED;
+    const al = Math.hypot(ni.aimDx, ni.aimDy);
+    if (ni.aimActive && al > 0.2) p2.face = Math.atan2(ni.aimDy, ni.aimDx);
+    else if (ml > 0.15) p2.face = Math.atan2(my, mx);
+  }
+
   function resolveTntPush(s, p) {
     const h = L.CRATE / 2;
     const rad = L.CRATE * 0.56;
@@ -543,11 +675,6 @@ function BattleScreen({ perk, onExit, onRematch }) {
   }
 
   function botThink(s, bot, foe, dt) {
-    // ここでボットの行動を一時停止中（テスト用）
-    bot.vx = 0;
-    bot.vy = 0;
-    return;
-    // eslint-disable-next-line no-unreachable
     if (bot.frozen > 0) { bot.vx = 0; bot.vy = 0; return; }
     bot.think -= dt;
     bot.aimHold -= dt;
@@ -682,6 +809,25 @@ function BattleScreen({ perk, onExit, onRematch }) {
     });
     ro.observe(wrapRef.current);
 
+    /* オンライン対戦：ホストは入力/発射イベントを受け取り、ゲストはスナップショットを受け取る */
+    if (ws) {
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        const s = gRef.current;
+        if (isHost) {
+          const p2 = s.players[1];
+          if (msg.type === "move") { netInput.current.moveDx = msg.dx; netInput.current.moveDy = msg.dy; }
+          else if (msg.type === "aim") { netInput.current.aimDx = msg.dx; netInput.current.aimDy = msg.dy; netInput.current.aimActive = msg.active; }
+          else if (msg.type === "fire") { fire(s, p2, msg.dx, msg.dy, { viaTap: msg.viaTap }); }
+          else if (msg.type === "weaponfire") { fireWeapon(s, p2, msg.dx, msg.dy); }
+        } else {
+          if (msg.type === "snapshot") applySnapshot(msg.payload);
+        }
+      };
+      ws.onclose = () => setDisconnected(true);
+    }
+
     /* タップ＝即発射／移動しながら第2の指で長押し＝照準 */
     const input = {
       move: { id: null, ox: 0, oy: 0, dx: 0, dy: 0 },
@@ -731,15 +877,20 @@ function BattleScreen({ perk, onExit, onRematch }) {
       const p1 = s.players[0];
       const canAct = !s.over && phaseRef.current === "playing" && p1.frozen <= 0;
 
+      const triggerFire = (dx, dy, viaTap) => {
+        if (online && !isHost) ws.send(JSON.stringify({ type: "fire", dx, dy, viaTap }));
+        else fire(s, p1, dx, dy, { viaTap });
+      };
+
       if (e.pointerId === input.move.id) {
         input.move.id = null; input.move.dx = 0; input.move.dy = 0;
       } else if (e.pointerId === input.aim.id) {
         if (canAct && Math.hypot(input.aim.dx, input.aim.dy) > 0.15) {
-          fire(s, p1, input.aim.dx, input.aim.dy, { viaTap: false });
+          triggerFire(input.aim.dx, input.aim.dy, false);
         }
         input.aim.id = null; input.aim.dx = 0; input.aim.dy = 0;
       } else if (rec && !rec.moved && canAct) {
-        fire(s, p1, Math.cos(p1.face), Math.sin(p1.face), { viaTap: true });
+        triggerFire(Math.cos(p1.face), Math.sin(p1.face), true);
       }
     };
     const onCancel = (e) => {
@@ -765,7 +916,7 @@ function BattleScreen({ perk, onExit, onRematch }) {
       s.t += dt;
       const p1 = s.players[0], p2 = s.players[1];
 
-      if (!s.over && phaseRef.current === "playing") {
+      if (!s.over && phaseRef.current === "playing" && (!online || isHost)) {
         for (const p of s.players) {
           if (p.weaponCd > 0) p.weaponCd = Math.max(0, p.weaponCd - dt);
           if (p.frozen > 0) p.frozen = Math.max(0, p.frozen - dt);
@@ -787,7 +938,8 @@ function BattleScreen({ perk, onExit, onRematch }) {
         if (al > 0.2) p1.face = Math.atan2(input.aim.dy, input.aim.dx);
         else if (ml > 0.15) p1.face = Math.atan2(my, mx);
 
-        botThink(s, p2, p1, dt);
+        if (online) applyRemoteInput(p2);
+        else botThink(s, p2, p1, dt);
 
         for (const p of s.players) {
           if (p.frozen > 0) { p.vx = 0; p.vy = 0; }
@@ -1003,6 +1155,20 @@ function BattleScreen({ perk, onExit, onRematch }) {
         if (d.t > d.life) s.dmgPopups.splice(i, 1);
       }
       s.shake *= Math.pow(0.001, dt);
+
+      // オンライン対戦：ホストは状態を送信、ゲストは自分の入力を送信（どちらも約20回/秒）
+      if (online) {
+        sendAccum.current += dt;
+        if (sendAccum.current > 0.05) {
+          sendAccum.current = 0;
+          if (isHost) {
+            ws.send(JSON.stringify({ type: "snapshot", payload: serializeState(s) }));
+          } else {
+            ws.send(JSON.stringify({ type: "move", dx: input.move.dx, dy: input.move.dy }));
+            ws.send(JSON.stringify({ type: "aim", dx: input.aim.dx, dy: input.aim.dy, active: input.aim.id !== null }));
+          }
+        }
+      }
 
       draw(ctx, s, input);
       setUi((u) => {
@@ -1471,7 +1637,7 @@ function BattleScreen({ perk, onExit, onRematch }) {
       {ui.winner !== null && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-black/70">
           <div className="text-4xl font-bold" style={{ color: ui.winner === 0 ? C.p1 : C.p2 }}>
-            {ui.winner === 0 ? "あなたの勝ち" : "ボットの勝ち"}
+            {ui.winner === 0 ? "あなたの勝ち" : online ? "相手の勝ち" : "ボットの勝ち"}
           </div>
           <div className="flex gap-3">
             <button
@@ -1491,6 +1657,19 @@ function BattleScreen({ perk, onExit, onRematch }) {
           </div>
         </div>
       )}
+
+      {disconnected && ui.winner === null && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-black/70">
+          <div className="text-xl font-bold" style={{ color: "#eef0f3" }}>相手が切断しました</div>
+          <button
+            onClick={onExit}
+            className="rounded-lg px-6 py-3 font-bold focus:outline-none focus:ring-2"
+            style={{ background: ACCENT, color: "#0b0d11" }}
+          >
+            ホームに戻る
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1502,20 +1681,48 @@ export default function App() {
   const [screen, setScreen] = useState("home"); // home | perks | battle
   const [matchId, setMatchId] = useState(0);
   const [perk, setPerk] = useState(null);
+  const [netMatch, setNetMatch] = useState(null); // { ws, isHost } | null
 
   const goPerks = () => setScreen("perks");
   const choosePerk = (id) => {
     setPerk(id);
+    setNetMatch(null);
+    setMatchId((m) => m + 1);
+    setScreen("battle");
+  };
+  const onMatched = (ws, isHost) => {
+    setPerk(null); // オンライン対戦は今のところサブ能力なし
+    setNetMatch({ ws, isHost });
     setMatchId((m) => m + 1);
     setScreen("battle");
   };
   const rematch = () => {
+    if (netMatch) {
+      // オンライン対戦の再戦は今回はホームに戻す形にしている
+      netMatch.ws.close();
+      setNetMatch(null);
+      setScreen("home");
+      return;
+    }
     setMatchId((m) => m + 1);
     setScreen("battle"); // 同じ能力のまま再戦
   };
-  const goHome = () => setScreen("home");
+  const goHome = () => {
+    if (netMatch) netMatch.ws.close();
+    setNetMatch(null);
+    setScreen("home");
+  };
 
-  if (screen === "home") return <HomeScreen onStartBattle={goPerks} />;
+  if (screen === "home") return <HomeScreen onStartBattle={goPerks} onMatched={onMatched} />;
   if (screen === "perks") return <PerkSelectScreen onSelect={choosePerk} />;
-  return <BattleScreen key={matchId} perk={perk} onExit={goHome} onRematch={rematch} />;
+  return (
+    <BattleScreen
+      key={matchId}
+      perk={perk}
+      ws={netMatch?.ws ?? null}
+      isHost={netMatch?.isHost ?? true}
+      onExit={goHome}
+      onRematch={rematch}
+    />
+  );
 }
