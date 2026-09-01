@@ -75,58 +75,80 @@ function connectPeer(ws, isHost, onReady) {
 function HomeScreen({ onStartBattle, onMatched }) {
   const [code, setCode] = useState("");
   const [soundOn, setSoundOn] = useState(true);
-  const [phase, setPhase] = useState("idle"); // idle | connecting | searching | bot
+  // idle | hosting | joining | join-failed | bot
+  const [phase, setPhase] = useState("idle");
+  const socketRef = useRef(null);
 
-  const startMatch = () => {
-    console.log("[home] connecting to", SERVER_URL);
-    setPhase("connecting");
-    let settled = false;
-    let waitTimeout = null;
+  const cleanupSocket = () => {
+    if (socketRef.current) {
+      try { socketRef.current.close(); } catch {}
+      socketRef.current = null;
+    }
+  };
+
+  const startHost = () => {
+    if (!code.trim()) return;
+    cleanupSocket();
+    console.log("[home] hosting, connecting to", SERVER_URL);
+    setPhase("hosting");
     const socket = new WebSocket(SERVER_URL);
-
-    const giveUp = () => {
-      if (settled) return;
-      settled = true;
-      socket.close();
-      setPhase("bot");
-    };
-
-    // サーバーがスリープから目覚めるのに時間がかかることがあるため、接続確立までは長めに待つ
-    const connectTimeout = setTimeout(giveUp, 45000);
+    socketRef.current = socket;
 
     socket.onopen = () => {
-      clearTimeout(connectTimeout);
-      socket.send(JSON.stringify({ type: "join", code: code.trim() || "default" }));
-      setPhase("searching");
-      waitTimeout = setTimeout(giveUp, 15000);
+      socket.send(JSON.stringify({ type: "host", code: code.trim() }));
     };
     socket.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.type === "matched" && !settled) {
-        settled = true;
-        clearTimeout(connectTimeout);
-        clearTimeout(waitTimeout);
-        console.log("[home] matched, you =", msg.you, "isHost =", msg.you === 0);
-        onMatched(socket, msg.you === 0);
-      } else if (msg.type === "full" && !settled) {
-        settled = true;
-        clearTimeout(connectTimeout);
-        clearTimeout(waitTimeout);
-        socket.close();
-        setPhase("idle");
-        alert("その合言葉はすでに2人使っています。別の合言葉を試してください。");
+      if (msg.type === "matched") {
+        console.log("[home] matched as host");
+        socketRef.current = null;
+        onMatched(socket, true);
       }
     };
     socket.onerror = (e) => {
-      console.log("[home] socket error", e, "readyState=", socket.readyState);
-      if (settled) return;
-      settled = true;
-      clearTimeout(connectTimeout);
-      clearTimeout(waitTimeout);
-      setPhase("bot");
+      console.log("[home] host socket error", e);
+      setPhase("idle");
     };
   };
+
+  const startJoin = () => {
+    if (!code.trim()) return;
+    cleanupSocket();
+    console.log("[home] joining, connecting to", SERVER_URL);
+    setPhase("joining");
+    const socket = new WebSocket(SERVER_URL);
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: "join", code: code.trim() }));
+    };
+    socket.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "matched") {
+        console.log("[home] matched as guest");
+        socketRef.current = null;
+        onMatched(socket, false);
+      } else if (msg.type === "join-failed") {
+        console.log("[home] join failed");
+        cleanupSocket();
+        setPhase("join-failed");
+      }
+    };
+    socket.onerror = (e) => {
+      console.log("[home] join socket error", e);
+      cleanupSocket();
+      setPhase("join-failed");
+    };
+  };
+
+  const cancelHosting = () => {
+    cleanupSocket();
+    setPhase("idle");
+  };
+
+  useEffect(() => cleanupSocket, []); // アンマウント時に念のため後片付け
 
   return (
     <div
@@ -164,6 +186,7 @@ function HomeScreen({ onStartBattle, onMatched }) {
             id="passcode"
             value={code}
             onChange={(e) => setCode(e.target.value)}
+            disabled={phase === "hosting" || phase === "joining"}
             placeholder="合言葉を入力してください"
             className="code-input w-full rounded-lg border px-4 py-3 text-base outline-none transition-shadow duration-150"
             style={{
@@ -175,35 +198,75 @@ function HomeScreen({ onStartBattle, onMatched }) {
           />
         </div>
 
-        <button
-          onClick={phase === "idle" ? startMatch : phase === "bot" ? onStartBattle : undefined}
-          disabled={phase === "searching"}
-          className="neon-btn mb-2 flex w-full items-center justify-center gap-3 rounded-lg px-6 py-3.5 text-base font-bold transition-transform duration-100"
-          style={{
-            background: phase === "idle" || phase === "bot" ? ACCENT : "#14171d",
-            color: phase === "idle" || phase === "bot" ? "#0b0d11" : "#c7cbd1",
-            border: phase === "searching" ? "1px solid rgba(255,255,255,.12)" : "none",
-            boxShadow: phase === "searching" ? "none" : "0 0 16px rgba(95,212,224,.25)",
-          }}
-        >
-          {phase === "searching" && (
-            <>
-              <span
-                className="search-ring inline-block h-4 w-4 rounded-full"
-                style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
-              />
-              対戦相手を探しています…
-            </>
-          )}
-          {phase === "idle" && "マッチング"}
-          {phase === "bot" && "BOTと対戦を開始"}
-        </button>
-        {phase === "bot" && (
+        {(phase === "idle" || phase === "join-failed") && (
+          <div className="mb-2 flex gap-2">
+            <button
+              onClick={startHost}
+              disabled={!code.trim()}
+              className="neon-btn flex-1 rounded-lg px-4 py-3.5 text-base font-bold transition-transform duration-100 disabled:opacity-40"
+              style={{ background: ACCENT, color: "#0b0d11", boxShadow: "0 0 16px rgba(95,212,224,.25)" }}
+            >
+              ホストする
+            </button>
+            <button
+              onClick={startJoin}
+              disabled={!code.trim()}
+              className="neon-btn flex-1 rounded-lg border px-4 py-3.5 text-base font-bold transition-transform duration-100 disabled:opacity-40"
+              style={{ borderColor: "rgba(255,255,255,.2)", color: "#eef0f3", background: "#14171d" }}
+            >
+              参加する
+            </button>
+          </div>
+        )}
+
+        {phase === "hosting" && (
+          <button
+            onClick={cancelHosting}
+            className="neon-btn mb-2 flex w-full items-center justify-center gap-3 rounded-lg border px-6 py-3.5 text-base font-bold transition-transform duration-100"
+            style={{ borderColor: "rgba(255,255,255,.12)", color: "#c7cbd1", background: "#14171d" }}
+          >
+            <span
+              className="search-ring inline-block h-4 w-4 rounded-full"
+              style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
+            />
+            相手の参加を待っています（タップでキャンセル）
+          </button>
+        )}
+
+        {phase === "joining" && (
+          <button
+            disabled
+            className="neon-btn mb-2 flex w-full items-center justify-center gap-3 rounded-lg border px-6 py-3.5 text-base font-bold"
+            style={{ borderColor: "rgba(255,255,255,.12)", color: "#c7cbd1", background: "#14171d" }}
+          >
+            <span
+              className="search-ring inline-block h-4 w-4 rounded-full"
+              style={{ border: "2px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
+            />
+            接続しています…
+          </button>
+        )}
+
+        {phase === "hosting" && (
           <p className="mb-6 text-center text-xs" style={{ color: "#6b7178" }}>
-            対戦相手が見つからなかったため、BOTと対戦します
+            この合言葉を相手に伝えて、「参加する」を押してもらってください
           </p>
         )}
-        {phase !== "bot" && <div className="mb-8" />}
+        {phase === "join-failed" && (
+          <p className="mb-6 text-center text-xs" style={{ color: "#ff9a8a" }}>
+            この合言葉のホストが見つかりませんでした。相手が先に「ホストする」を押しているか確認してください
+          </p>
+        )}
+        {(phase === "idle" || phase === "join-failed") && (
+          <button
+            onClick={onStartBattle}
+            className="mb-6 w-full text-center text-xs underline decoration-dotted"
+            style={{ color: "#6b7178" }}
+          >
+            相手がいない？ BOTと対戦する
+          </button>
+        )}
+        {(phase === "hosting" || phase === "joining") && <div className="mb-8" />}
 
         <div className="flex items-center justify-between rounded-lg px-4 py-3" style={{ background: "#14171d" }}>
           <span className="text-sm font-medium" style={{ color: "#c7cbd1" }}>サウンド</span>
