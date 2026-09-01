@@ -9,33 +9,43 @@ const SERVER_URL = "wss://minimo-missile-server.onrender.com";
 function HomeScreen({ onStartBattle, onMatched }) {
   const [code, setCode] = useState("");
   const [soundOn, setSoundOn] = useState(true);
-  const [phase, setPhase] = useState("idle"); // idle | searching | bot
+  const [phase, setPhase] = useState("idle"); // idle | connecting | searching | bot
 
   const startMatch = () => {
-    setPhase("searching");
+    setPhase("connecting");
     let settled = false;
+    let waitTimeout = null;
     const socket = new WebSocket(SERVER_URL);
 
-    const timeout = setTimeout(() => {
+    const giveUp = () => {
       if (settled) return;
       settled = true;
       socket.close();
       setPhase("bot");
-    }, 8000);
+    };
+
+    // サーバーがスリープから目覚めるのに時間がかかることがあるため、接続確立までは長めに待つ
+    const connectTimeout = setTimeout(giveUp, 45000);
 
     socket.onopen = () => {
+      clearTimeout(connectTimeout);
       socket.send(JSON.stringify({ type: "join", code: code.trim() || "default" }));
+      setPhase("searching");
+      waitTimeout = setTimeout(giveUp, 15000);
     };
     socket.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "matched" && !settled) {
         settled = true;
-        clearTimeout(timeout);
+        clearTimeout(connectTimeout);
+        clearTimeout(waitTimeout);
+        console.log("[home] matched, you =", msg.you, "isHost =", msg.you === 0);
         onMatched(socket, msg.you === 0);
       } else if (msg.type === "full" && !settled) {
         settled = true;
-        clearTimeout(timeout);
+        clearTimeout(connectTimeout);
+        clearTimeout(waitTimeout);
         socket.close();
         setPhase("idle");
         alert("その合言葉はすでに2人使っています。別の合言葉を試してください。");
@@ -44,7 +54,8 @@ function HomeScreen({ onStartBattle, onMatched }) {
     socket.onerror = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      clearTimeout(connectTimeout);
+      clearTimeout(waitTimeout);
       setPhase("bot");
     };
   };
@@ -253,6 +264,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
   const online = !!ws;
   const netInput = useRef({ moveDx: 0, moveDy: 0, aimDx: 0, aimDy: 0, aimActive: false });
   const sendAccum = useRef(0);
+  const netSendCount = useRef(0);
   const [disconnected, setDisconnected] = useState(false);
   const initialMaxHp = perk === "blessing" ? BLESSING_HP : BASE_HP;
   const [ui, setUi] = useState({
@@ -786,6 +798,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
 
   /* ---------- ループ ---------- */
   useEffect(() => {
+    console.log("[battle] mount: online =", online, "isHost =", isHost, "ws readyState =", ws?.readyState);
     layout();
     gRef.current = makeState();
     const canvas = canvasRef.current;
@@ -814,6 +827,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       ws.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
+        console.log("[battle] recv", msg.type, isHost ? "(as host)" : "(as guest)");
         const s = gRef.current;
         if (isHost) {
           const p2 = s.players[1];
@@ -825,7 +839,8 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
           if (msg.type === "snapshot") applySnapshot(msg.payload);
         }
       };
-      ws.onclose = () => setDisconnected(true);
+      ws.onclose = () => { console.log("[battle] ws closed"); setDisconnected(true); };
+      ws.onerror = (e) => console.log("[battle] ws error", e);
     }
 
     /* タップ＝即発射／移動しながら第2の指で長押し＝照準 */
@@ -1161,11 +1176,19 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
         sendAccum.current += dt;
         if (sendAccum.current > 0.05) {
           sendAccum.current = 0;
-          if (isHost) {
-            ws.send(JSON.stringify({ type: "snapshot", payload: serializeState(s) }));
-          } else {
-            ws.send(JSON.stringify({ type: "move", dx: input.move.dx, dy: input.move.dy }));
-            ws.send(JSON.stringify({ type: "aim", dx: input.aim.dx, dy: input.aim.dy, active: input.aim.id !== null }));
+          try {
+            if (isHost) {
+              ws.send(JSON.stringify({ type: "snapshot", payload: serializeState(s) }));
+            } else {
+              ws.send(JSON.stringify({ type: "move", dx: input.move.dx, dy: input.move.dy }));
+              ws.send(JSON.stringify({ type: "aim", dx: input.aim.dx, dy: input.aim.dy, active: input.aim.id !== null }));
+            }
+            netSendCount.current += 1;
+            if (netSendCount.current <= 5 || netSendCount.current % 60 === 0) {
+              console.log("[battle] sent #", netSendCount.current, isHost ? "snapshot" : "move/aim", "readyState=", ws.readyState);
+            }
+          } catch (err) {
+            console.log("[battle] ws.send failed", err);
           }
         }
       }
