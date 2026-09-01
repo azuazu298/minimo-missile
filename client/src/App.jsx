@@ -415,28 +415,70 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     ammo1: 0, ammo2: 0, winner: null, combo1: 0, weaponCd1: 0, snowImmune2: 0,
   });
 
-  /* カウントダウン（試合開始前） */
+  /* カウントダウン（試合開始前・再戦時にも再利用） */
   const phaseRef = useRef("countdown"); // countdown | playing
   const [phase, setPhaseState] = useState("countdown");
   const setPhase = (p) => { phaseRef.current = p; setPhaseState(p); };
   const [count, setCount] = useState(3);
+  const countdownIvRef = useRef(null);
 
-  useEffect(() => {
+  function beginCountdown() {
+    if (countdownIvRef.current) clearInterval(countdownIvRef.current);
     let n = 3;
     setCount(3);
     setPhase("countdown");
-    const iv = setInterval(() => {
+    countdownIvRef.current = setInterval(() => {
       n -= 1;
       if (n > 0) {
         setCount(n);
       } else {
-        clearInterval(iv);
+        clearInterval(countdownIvRef.current);
+        countdownIvRef.current = null;
         setCount(0);
         setTimeout(() => setPhase("playing"), 550);
       }
     }, 800);
-    return () => clearInterval(iv);
+  }
+
+  useEffect(() => {
+    beginCountdown();
+    return () => { if (countdownIvRef.current) clearInterval(countdownIvRef.current); };
   }, []);
+
+  /* オンライン対戦の再戦：両者が希望を出したら、接続はそのままに試合だけその場でリセットする */
+  const [iWantRematch, setIWantRematch] = useState(false);
+  const [peerWantsRematch, setPeerWantsRematch] = useState(false);
+
+  function restartMatchInPlace() {
+    console.log("[battle] restarting match in place");
+    gRef.current = makeState();
+    netInputQueue.current = [];
+    lastAckSeq.current = 0;
+    inputSeq.current = 0;
+    pendingInputs.current = [];
+    setIWantRematch(false);
+    setPeerWantsRematch(false);
+    const freshMaxHp = perk === "blessing" ? BLESSING_HP : BASE_HP;
+    setUi({
+      hp1: freshMaxHp, hp2: BASE_HP, maxHp1: freshMaxHp, maxHp2: BASE_HP,
+      ammo1: 0, ammo2: 0, winner: null, combo1: 0, weaponCd1: 0, snowImmune2: 0,
+    });
+    beginCountdown();
+  }
+
+  useEffect(() => {
+    if (iWantRematch && peerWantsRematch) restartMatchInPlace();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iWantRematch, peerWantsRematch]);
+
+  const requestRematch = () => {
+    if (online) {
+      sendMsg({ type: "rematch" });
+      setIWantRematch(true);
+    } else {
+      onRematch();
+    }
+  };
 
   /* 武器ボタン（雪鉄砲・TP弾専用） */
   const weaponBtnRef = useRef(null);
@@ -1031,6 +1073,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       try { msg = JSON.parse(ev.data); } catch { return; }
       console.log("[battle] recv", msg.type, isHost ? "(as host)" : "(as guest)");
       const s = gRef.current;
+      if (msg.type === "rematch") { setPeerWantsRematch(true); return; }
       if (isHost) {
         const p2 = s.players[1];
         if (msg.type === "move") {
@@ -1922,13 +1965,23 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
           <div className="text-4xl font-bold" style={{ color: ui.winner === 0 ? C.p1 : C.p2 }}>
             {ui.winner === 0 ? "あなたの勝ち" : online ? "相手の勝ち" : "ボットの勝ち"}
           </div>
+          {online && peerWantsRematch && !iWantRematch && (
+            <div className="text-xs" style={{ color: ACCENT }}>相手が再戦を希望しています</div>
+          )}
           <div className="flex gap-3">
             <button
-              onClick={onRematch}
-              className="rounded-lg px-6 py-3 font-bold focus:outline-none focus:ring-2"
+              onClick={requestRematch}
+              disabled={online && iWantRematch}
+              className="flex items-center gap-2 rounded-lg px-6 py-3 font-bold focus:outline-none focus:ring-2 disabled:opacity-60"
               style={{ background: ACCENT, color: "#0b0d11" }}
             >
-              もう一度プレイ
+              {online && iWantRematch && (
+                <span
+                  className="search-ring inline-block h-3.5 w-3.5 rounded-full"
+                  style={{ border: "2px solid rgba(11,13,17,.25)", borderTopColor: "#0b0d11", animation: "ringSpin .8s linear infinite" }}
+                />
+              )}
+              {online && iWantRematch ? "相手を待っています…" : "もう一度プレイ"}
             </button>
             <button
               onClick={onExit}
