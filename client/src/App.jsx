@@ -3,6 +3,72 @@ import { useRef, useEffect, useState } from "react";
 const ACCENT = "#5fd4e0"; // アプリ全体で使う唯一のネオンアクセント
 const SERVER_URL = "wss://minimo-missile-server-sg.onrender.com";
 
+/**
+ * 合言葉サーバー(ws)を「お見合い」だけに使い、実際のゲームデータは
+ * できるだけ直接（WebRTC）でやり取りする。8秒以内に繋がらなければ
+ * 中継(ws)にフォールバックする。
+ * onReady(kind, transport) が一度だけ呼ばれる。kind は "p2p" | "relay"。
+ */
+function connectPeer(ws, isHost, onReady) {
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  let settled = false;
+
+  const onSignal = async (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    try {
+      if (msg.type === "rtc-offer") {
+        await pc.setRemoteDescription(msg.sdp);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: "rtc-answer", sdp: pc.localDescription }));
+      } else if (msg.type === "rtc-answer") {
+        await pc.setRemoteDescription(msg.sdp);
+      } else if (msg.type === "rtc-ice") {
+        if (msg.candidate) await pc.addIceCandidate(msg.candidate);
+      }
+    } catch (err) {
+      console.log("[rtc] signal error", err);
+    }
+  };
+  ws.addEventListener("message", onSignal);
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) ws.send(JSON.stringify({ type: "rtc-ice", candidate: e.candidate }));
+  };
+  pc.onconnectionstatechange = () => console.log("[rtc] connection state:", pc.connectionState);
+
+  const fallbackTimer = setTimeout(() => {
+    console.log("[rtc] p2p timed out, falling back to relay");
+    finish("relay", ws);
+  }, 8000);
+
+  function finish(kind, transport) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(fallbackTimer);
+    ws.removeEventListener("message", onSignal);
+    if (kind === "relay") { try { pc.close(); } catch {} }
+    onReady(kind, transport);
+  }
+
+  function wireChannel(channel) {
+    channel.onopen = () => { console.log("[rtc] datachannel open"); finish("p2p", channel); };
+    channel.onerror = (e) => console.log("[rtc] datachannel error", e);
+  }
+
+  if (isHost) {
+    const channel = pc.createDataChannel("game");
+    wireChannel(channel);
+    pc.createOffer()
+      .then((offer) => pc.setLocalDescription(offer))
+      .then(() => ws.send(JSON.stringify({ type: "rtc-offer", sdp: pc.localDescription })))
+      .catch((err) => console.log("[rtc] offer error", err));
+  } else {
+    pc.ondatachannel = (e) => wireChannel(e.channel);
+  }
+}
+
 /* ============================================================
    ホーム画面
    ============================================================ */
@@ -264,6 +330,13 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
   const canvasRef = useRef(null);
   const gRef = useRef(null);
   const online = !!ws;
+  const chanRef = useRef(null); // 実際にゲームデータを流すチャネル（P2Pか中継か）
+  const [netStatus, setNetStatus] = useState("connecting"); // connecting | p2p | relay
+  const sendMsg = (obj) => {
+    const ch = chanRef.current;
+    if (!ch) return;
+    try { ch.send(JSON.stringify(obj)); } catch (err) { console.log("[battle] send failed", err); }
+  };
   const netInput = useRef({ moveDx: 0, moveDy: 0, aimDx: 0, aimDy: 0, aimActive: false });
   const netInputQueue = useRef([]); // ホスト用：ゲストから届いた入力を順番に積むキュー
   const lastAckSeq = useRef(0); // ホスト用：どこまで処理したか
@@ -351,7 +424,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
         : null;
     if (!dir) return;
 
-    if (online && !isHost) ws.send(JSON.stringify({ type: "weaponfire", dx: dir.dx, dy: dir.dy }));
+    if (online && !isHost) sendMsg({ type: "weaponfire", dx: dir.dx, dy: dir.dy });
     else fireWeapon(s, p1, dir.dx, dir.dy);
   }
 
@@ -877,25 +950,35 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     ro.observe(wrapRef.current);
 
     /* オンライン対戦：ホストは入力/発射イベントを受け取り、ゲストはスナップショットを受け取る */
-    if (ws) {
-      ws.onmessage = (ev) => {
-        let msg;
-        try { msg = JSON.parse(ev.data); } catch { return; }
-        console.log("[battle] recv", msg.type, isHost ? "(as host)" : "(as guest)");
-        const s = gRef.current;
-        if (isHost) {
-          const p2 = s.players[1];
-          if (msg.type === "move") {
-            netInputQueue.current.push({ seq: msg.seq, mx: msg.dx, my: msg.dy, dt: msg.dt });
-            netInput.current.moveDx = msg.dx; netInput.current.moveDy = msg.dy; // 向き計算用
-          }
-          else if (msg.type === "aim") { netInput.current.aimDx = msg.dx; netInput.current.aimDy = msg.dy; netInput.current.aimActive = msg.active; }
-          else if (msg.type === "fire") { fire(s, p2, msg.dx, msg.dy, { viaTap: msg.viaTap }); }
-          else if (msg.type === "weaponfire") { fireWeapon(s, p2, msg.dx, msg.dy); }
-        } else {
-          if (msg.type === "snapshot") applySnapshot(msg.payload);
+    const handleGameMessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      console.log("[battle] recv", msg.type, isHost ? "(as host)" : "(as guest)");
+      const s = gRef.current;
+      if (isHost) {
+        const p2 = s.players[1];
+        if (msg.type === "move") {
+          netInputQueue.current.push({ seq: msg.seq, mx: msg.dx, my: msg.dy, dt: msg.dt });
+          netInput.current.moveDx = msg.dx; netInput.current.moveDy = msg.dy; // 向き計算用
         }
-      };
+        else if (msg.type === "aim") { netInput.current.aimDx = msg.dx; netInput.current.aimDy = msg.dy; netInput.current.aimActive = msg.active; }
+        else if (msg.type === "fire") { fire(s, p2, msg.dx, msg.dy, { viaTap: msg.viaTap }); }
+        else if (msg.type === "weaponfire") { fireWeapon(s, p2, msg.dx, msg.dy); }
+      } else {
+        if (msg.type === "snapshot") applySnapshot(msg.payload);
+      }
+    };
+
+    if (ws) {
+      connectPeer(ws, isHost, (kind, transport) => {
+        console.log("[battle] transport ready:", kind);
+        setNetStatus(kind);
+        transport.onmessage = handleGameMessage;
+        chanRef.current = { send: (json) => transport.send(json) };
+        if (kind === "p2p") {
+          transport.onclose = () => { console.log("[battle] datachannel closed"); setDisconnected(true); };
+        }
+      });
       ws.onclose = () => { console.log("[battle] ws closed"); setDisconnected(true); };
       ws.onerror = (e) => console.log("[battle] ws error", e);
     }
@@ -950,7 +1033,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       const canAct = !s.over && phaseRef.current === "playing" && p1.frozen <= 0;
 
       const triggerFire = (dx, dy, viaTap) => {
-        if (online && !isHost) ws.send(JSON.stringify({ type: "fire", dx, dy, viaTap }));
+        if (online && !isHost) sendMsg({ type: "fire", dx, dy, viaTap });
         else fire(s, p1, dx, dy, { viaTap });
       };
 
@@ -1155,6 +1238,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
             }
 
             for (const p of s.players) {
+              if (p.id === b.owner && b.t < 0.08) continue; // 発射直後のごく短い猶予（自分の位置ズレ対策）
               if (dist(b.x, b.y, p.x, p.y) < L.PR + L.BR) {
                 if (b.kind === "snow") {
                   if (p.id !== b.owner) {
@@ -1246,7 +1330,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
           sendAccum.current = 0;
           try {
             if (isHost) {
-              ws.send(JSON.stringify({ type: "snapshot", payload: serializeState(s) }));
+              sendMsg({ type: "snapshot", payload: serializeState(s) });
             } else {
               let mx = input.move.dx, my = input.move.dy;
               if (keys["w"] || keys["arrowup"]) my -= 1;
@@ -1267,12 +1351,12 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
               pendingInputs.current.push({ seq, mx, my, dt: tickDt });
               if (pendingInputs.current.length > 200) pendingInputs.current.shift();
 
-              ws.send(JSON.stringify({ type: "move", seq, dx: mx, dy: my, dt: tickDt }));
-              ws.send(JSON.stringify({ type: "aim", dx: input.aim.dx, dy: input.aim.dy, active: input.aim.id !== null }));
+              sendMsg({ type: "move", seq, dx: mx, dy: my, dt: tickDt });
+              sendMsg({ type: "aim", dx: input.aim.dx, dy: input.aim.dy, active: input.aim.id !== null });
             }
             netSendCount.current += 1;
             if (netSendCount.current <= 5 || netSendCount.current % 60 === 0) {
-              console.log("[battle] sent #", netSendCount.current, isHost ? "snapshot" : "move/aim", "readyState=", ws.readyState);
+              console.log("[battle] sent #", netSendCount.current, isHost ? "snapshot" : "move/aim", "via", netStatus);
             }
           } catch (err) {
             console.log("[battle] ws.send failed", err);
@@ -1729,6 +1813,18 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
               }}
             />
           )}
+        </div>
+      )}
+
+      {online && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-16 -translate-x-1/2 rounded-full px-3 py-1 text-[10px]"
+          style={{
+            background: "rgba(0,0,0,.5)",
+            color: netStatus === "p2p" ? "#8ef0a8" : netStatus === "relay" ? "#ffcf5a" : "#9aa0a8",
+          }}
+        >
+          {netStatus === "p2p" ? "直接接続" : netStatus === "relay" ? "中継経由" : "接続中…"}
         </div>
       )}
 

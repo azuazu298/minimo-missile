@@ -18,6 +18,12 @@ function send(ws, obj) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
+function pruneRoom(room) {
+  for (let i = room.length - 1; i >= 0; i--) {
+    if (room[i].readyState !== room[i].OPEN) room.splice(i, 1);
+  }
+}
+
 function leaveRoom(ws) {
   if (!ws.roomCode) return;
   const room = rooms.get(ws.roomCode);
@@ -54,6 +60,7 @@ wss.on("connection", (ws) => {
         room = [];
         rooms.set(code, room);
       }
+      pruneRoom(room); // 古い（死んだ）接続を先に掃除してから判定する
       if (room.length >= 2) {
         send(ws, { type: "full" });
         return;
@@ -98,7 +105,7 @@ const interval = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   });
-}, 30000);
+}, 10000);
 
 wss.on("close", () => clearInterval(interval));
 
