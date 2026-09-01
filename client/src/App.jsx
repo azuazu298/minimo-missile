@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 
 const ACCENT = "#5fd4e0"; // アプリ全体で使う唯一のネオンアクセント
-const SERVER_URL = "wss://minimo-missile-server-sg-xxxx.onrender.com";
+const SERVER_URL = "wss://minimo-missile-server-sg.onrender.com";
 
 /* ============================================================
    ホーム画面
@@ -12,6 +12,7 @@ function HomeScreen({ onStartBattle, onMatched }) {
   const [phase, setPhase] = useState("idle"); // idle | connecting | searching | bot
 
   const startMatch = () => {
+    console.log("[home] connecting to", SERVER_URL);
     setPhase("connecting");
     let settled = false;
     let waitTimeout = null;
@@ -51,7 +52,8 @@ function HomeScreen({ onStartBattle, onMatched }) {
         alert("その合言葉はすでに2人使っています。別の合言葉を試してください。");
       }
     };
-    socket.onerror = () => {
+    socket.onerror = (e) => {
+      console.log("[home] socket error", e, "readyState=", socket.readyState);
       if (settled) return;
       settled = true;
       clearTimeout(connectTimeout);
