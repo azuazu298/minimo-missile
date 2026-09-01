@@ -11,33 +11,34 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 
-// 合言葉(code) -> [ws, ws] （最大2人）
+// roomId(string) -> { host: ws, guest: ws|null, rules: "perks" | "none" }
 const rooms = new Map();
+let nextRoomId = 1;
 
 function send(ws, obj) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
-function pruneRoom(room) {
-  for (let i = room.length - 1; i >= 0; i--) {
-    if (room[i].readyState !== room[i].OPEN) room.splice(i, 1);
+function destroyRoom(roomId, exceptWs) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  for (const peer of [room.host, room.guest]) {
+    if (peer && peer !== exceptWs) {
+      send(peer, { type: "peer-left" });
+      peer.roomId = null;
+    }
   }
+  rooms.delete(roomId);
 }
 
 function leaveRoom(ws) {
-  if (!ws.roomCode) return;
-  const room = rooms.get(ws.roomCode);
-  if (!room) return;
-  const idx = room.indexOf(ws);
-  if (idx !== -1) room.splice(idx, 1);
-  for (const peer of room) send(peer, { type: "peer-left" });
-  if (room.length === 0) rooms.delete(ws.roomCode);
-  ws.roomCode = null;
+  if (!ws.roomId) return;
+  destroyRoom(ws.roomId, ws);
+  ws.roomId = null;
 }
 
 wss.on("connection", (ws) => {
-  ws.roomCode = null;
-  ws.playerIndex = null;
+  ws.roomId = null;
   ws.isAlive = true;
 
   ws.on("pong", () => { ws.isAlive = true; });
@@ -51,34 +52,38 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "host") {
-      const code = String(msg.code || "").trim();
-      if (!code) return;
-      if (ws.roomCode) leaveRoom(ws);
-
-      // ホストは常に「新しい待機」を開始する。古い（幽霊）部屋があれば上書きする
-      rooms.set(code, [ws]);
-      ws.roomCode = code;
-      ws.playerIndex = 0;
-      send(ws, { type: "hosting" });
+      if (ws.roomId) leaveRoom(ws);
+      const rules = msg.rules === "perks" ? "perks" : "none";
+      const id = String(nextRoomId++);
+      rooms.set(id, { host: ws, guest: null, rules });
+      ws.roomId = id;
+      send(ws, { type: "hosting", roomId: id });
       return;
     }
 
-    if (msg.type === "join") {
-      const code = String(msg.code || "").trim();
-      if (!code) return;
-      if (ws.roomCode) leaveRoom(ws);
+    if (msg.type === "list-rooms") {
+      const list = [];
+      for (const [id, room] of rooms) {
+        if (!room.guest && room.host.readyState === room.host.OPEN) {
+          list.push({ id, rules: room.rules });
+        }
+      }
+      send(ws, { type: "room-list", rooms: list });
+      return;
+    }
 
-      const room = rooms.get(code);
-      if (room) pruneRoom(room);
-      if (!room || room.length !== 1) {
+    if (msg.type === "join-room") {
+      if (ws.roomId) leaveRoom(ws);
+      const id = String(msg.roomId || "");
+      const room = rooms.get(id);
+      if (!room || room.guest || room.host.readyState !== room.host.OPEN) {
         send(ws, { type: "join-failed" });
         return;
       }
-
-      room.push(ws);
-      ws.roomCode = code;
-      ws.playerIndex = 1;
-      room.forEach((peer, i) => send(peer, { type: "matched", you: i }));
+      room.guest = ws;
+      ws.roomId = id;
+      send(room.host, { type: "matched", you: 0, rules: room.rules });
+      send(room.guest, { type: "matched", you: 1, rules: room.rules });
       return;
     }
 
@@ -87,13 +92,12 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // join/leave以外のメッセージは、種類を問わず同じ部屋の相手にそのまま転送する
-    if (ws.roomCode) {
-      const room = rooms.get(ws.roomCode);
+    // 上記以外は、同じ部屋の相手にそのまま転送する
+    if (ws.roomId) {
+      const room = rooms.get(ws.roomId);
       if (!room) return;
-      for (const peer of room) {
-        if (peer !== ws) send(peer, msg);
-      }
+      const peer = room.host === ws ? room.guest : room.host;
+      if (peer) send(peer, msg);
       return;
     }
   });
