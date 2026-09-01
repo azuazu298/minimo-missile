@@ -265,6 +265,10 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
   const gRef = useRef(null);
   const online = !!ws;
   const netInput = useRef({ moveDx: 0, moveDy: 0, aimDx: 0, aimDy: 0, aimActive: false });
+  const netInputQueue = useRef([]); // ホスト用：ゲストから届いた入力を順番に積むキュー
+  const lastAckSeq = useRef(0); // ホスト用：どこまで処理したか
+  const inputSeq = useRef(0); // ゲスト用：自分の入力の通し番号
+  const pendingInputs = useRef([]); // ゲスト用：まだホストに確認されていない入力の履歴
   const sendAccum = useRef(0);
   const netSendCount = useRef(0);
   const [disconnected, setDisconnected] = useState(false);
@@ -540,7 +544,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
   function serializeState(s) {
     const toN = (x, y) => normPos(x, y);
     return {
-      t: s.t, over: s.over, shake: s.shake,
+      t: s.t, over: s.over, shake: s.shake, ackSeq: lastAckSeq.current,
       players: s.players.map((p) => ({
         ...toN(p.x, p.y), hp: p.hp, maxHp: p.maxHp, ammo: p.ammo, face: p.face,
         flash: p.flash, frozen: p.frozen, perk: p.perk, combo: p.combo, weaponCd: p.weaponCd,
@@ -556,8 +560,9 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     };
   }
 
-  // ゲスト側：ホストから届いたスナップショットを、自分が常にplayers[0]になるよう
-  // 入れ替えながら画面用の状態に反映する
+  // ゲスト側：ホストから届いたスナップショットを画面用の状態に反映する。
+  // 自分(players[0])は「ホストが確認した位置＋まだ確認されていない入力の再計算」、
+  // 相手(players[1])は今まで通り「届いた位置へ滑らかに近づける」目標値として扱う。
   function applySnapshot(payload) {
     const s = gRef.current;
     if (!s || !payload) return;
@@ -565,22 +570,46 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     s.over = payload.over;
     s.shake = payload.shake || 0;
 
-    const swapped = [payload.players[1], payload.players[0]];
-    s.players = swapped.map((p, i) => {
-      const pos = denormPos(p.nx, p.ny);
-      const prev = s.players[i] || {};
-      const hasPos = prev.x !== undefined && prev.y !== undefined;
-      return {
-        ...prev,
-        id: i,
-        x: hasPos ? prev.x : pos.x, // 表示位置：滑らかに近づけていく
-        y: hasPos ? prev.y : pos.y,
-        tx: pos.x, ty: pos.y, // 目標位置：ホストから届いた最新値
-        hp: p.hp, maxHp: p.maxHp, ammo: p.ammo, face: p.face,
-        flash: p.flash, frozen: p.frozen, perk: p.perk, combo: p.combo, weaponCd: p.weaponCd,
-        snowImmuneT: p.snowImmuneT, tpBonusT: p.tpBonusT, color: i === 0 ? C.p1 : C.p2,
-      };
-    });
+    // 相手：ホスト自身のデータ(payload.players[0])
+    const peerRaw = payload.players[0];
+    const peerPos = denormPos(peerRaw.nx, peerRaw.ny);
+    const prevPeer = s.players[1] || {};
+    const peerHasPos = prevPeer.x !== undefined;
+    const peer = {
+      ...prevPeer,
+      id: 1,
+      x: peerHasPos ? prevPeer.x : peerPos.x,
+      y: peerHasPos ? prevPeer.y : peerPos.y,
+      tx: peerPos.x, ty: peerPos.y,
+      hp: peerRaw.hp, maxHp: peerRaw.maxHp, ammo: peerRaw.ammo, face: peerRaw.face,
+      flash: peerRaw.flash, frozen: peerRaw.frozen, perk: peerRaw.perk, combo: peerRaw.combo,
+      weaponCd: peerRaw.weaponCd, snowImmuneT: peerRaw.snowImmuneT, tpBonusT: peerRaw.tpBonusT,
+      color: C.p2,
+    };
+
+    // 自分：ホストが計算した自分のデータ(payload.players[1])を基準に、
+    // 確認済みの入力を捨てて、残り(まだホストが知らない分)だけ再計算する
+    const selfRaw = payload.players[1];
+    const confirmed = denormPos(selfRaw.nx, selfRaw.ny);
+    const ackSeq = payload.ackSeq || 0;
+    pendingInputs.current = pendingInputs.current.filter((inp) => inp.seq > ackSeq);
+    const replay = { x: confirmed.x, y: confirmed.y, frozen: selfRaw.frozen };
+    for (const inp of pendingInputs.current) {
+      stepPlayerMove(replay, inp.mx, inp.my, inp.dt);
+    }
+    const prevSelf = s.players[0] || {};
+    const self = {
+      ...prevSelf,
+      id: 0,
+      x: replay.x, y: replay.y,
+      face: prevSelf.face !== undefined ? prevSelf.face : selfRaw.face, // 向きはローカルの最新値を優先
+      hp: selfRaw.hp, maxHp: selfRaw.maxHp, ammo: selfRaw.ammo,
+      flash: selfRaw.flash, frozen: selfRaw.frozen, perk: selfRaw.perk, combo: selfRaw.combo,
+      weaponCd: selfRaw.weaponCd, snowImmuneT: selfRaw.snowImmuneT, tpBonusT: selfRaw.tpBonusT,
+      color: C.p1,
+    };
+
+    s.players = [self, peer];
 
     s.bullets = payload.bullets.map((b) => {
       const pos = denormPos(b.nx, b.ny);
@@ -610,17 +639,35 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     s.poofs = [];
   }
 
-  // ホスト側：ゲストから届いた入力状態をもとに、p2（ゲスト）を動かす（Botの代わり）
-  function applyRemoteInput(p2) {
-    const ni = netInput.current;
-    let mx = ni.moveDx, my = ni.moveDy;
+  // ホスト・ゲスト共通で使う「入力1回分ぶんの移動」。同じ入力なら必ず同じ結果になる（予測の再現性のため）
+  function stepPlayerMove(p, mx, my, dt) {
     const ml = Math.hypot(mx, my);
-    if (ml > 1) { mx /= ml; my /= ml; }
-    p2.vx = mx * L.SPEED;
-    p2.vy = my * L.SPEED;
+    let nmx = mx, nmy = my;
+    if (ml > 1) { nmx /= ml; nmy /= ml; }
+    if (p.frozen <= 0) {
+      p.x += nmx * L.SPEED * dt;
+      p.y += nmy * L.SPEED * dt;
+      p.x = clamp(p.x, L.AR.x + L.PR, L.AR.x + L.AR.w - L.PR);
+      p.y = clamp(p.y, L.AR.y + L.PR, L.AR.y + L.AR.h - L.PR);
+    }
+  }
+
+  // ホスト側：ゲストから届いた入力を、順番通りに1つずつp2へ適用する（Botの代わり）
+  function drainRemoteInput(p2) {
+    const queue = netInputQueue.current;
+    let processed = 0;
+    while (queue.length && processed < 100) {
+      const inp = queue.shift();
+      stepPlayerMove(p2, inp.mx, inp.my, inp.dt);
+      lastAckSeq.current = inp.seq;
+      processed++;
+    }
+    p2.vx = 0; p2.vy = 0; // 移動はここで確定済み。共通ループ側の速度積分を二重にかけない
+    const ni = netInput.current;
+    const ml = Math.hypot(ni.moveDx, ni.moveDy);
     const al = Math.hypot(ni.aimDx, ni.aimDy);
     if (ni.aimActive && al > 0.2) p2.face = Math.atan2(ni.aimDy, ni.aimDx);
-    else if (ml > 0.15) p2.face = Math.atan2(my, mx);
+    else if (ml > 0.15) p2.face = Math.atan2(ni.moveDy, ni.moveDx);
   }
 
   function resolveTntPush(s, p) {
@@ -838,7 +885,10 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
         const s = gRef.current;
         if (isHost) {
           const p2 = s.players[1];
-          if (msg.type === "move") { netInput.current.moveDx = msg.dx; netInput.current.moveDy = msg.dy; }
+          if (msg.type === "move") {
+            netInputQueue.current.push({ seq: msg.seq, mx: msg.dx, my: msg.dy, dt: msg.dt });
+            netInput.current.moveDx = msg.dx; netInput.current.moveDy = msg.dy; // 向き計算用
+          }
           else if (msg.type === "aim") { netInput.current.aimDx = msg.dx; netInput.current.aimDy = msg.dy; netInput.current.aimActive = msg.active; }
           else if (msg.type === "fire") { fire(s, p2, msg.dx, msg.dy, { viaTap: msg.viaTap }); }
           else if (msg.type === "weaponfire") { fireWeapon(s, p2, msg.dx, msg.dy); }
@@ -960,7 +1010,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
         if (al > 0.2) p1.face = Math.atan2(input.aim.dy, input.aim.dx);
         else if (ml > 0.15) p1.face = Math.atan2(my, mx);
 
-        if (online) applyRemoteInput(p2);
+        if (online) drainRemoteInput(p2);
         else botThink(s, p2, p1, dt);
 
         for (const p of s.players) {
@@ -1178,39 +1228,46 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       }
       s.shake *= Math.pow(0.001, dt);
 
-      // ゲスト側：キーボード操作もまとめて、ホストに送る入力を計算しておく
-      let guestMove = null;
+      // 相手キャラは毎フレーム、届いた位置(tx,ty)へ滑らかに近づける
       if (online && !isHost) {
-        let mx = input.move.dx, my = input.move.dy;
-        if (keys["w"] || keys["arrowup"]) my -= 1;
-        if (keys["s"] || keys["arrowdown"]) my += 1;
-        if (keys["a"] || keys["arrowleft"]) mx -= 1;
-        if (keys["d"] || keys["arrowright"]) mx += 1;
-        const ml = Math.hypot(mx, my);
-        if (ml > 1) { mx /= ml; my /= ml; }
-        guestMove = { mx, my };
-
-        // 届いた位置(tx,ty)へ滑らかに近づける。自分は反応重視で少しきつめ、相手はこれまで通り
-        const kSelf = 1 - Math.exp(-dt / 0.045);
-        const kPeer = 1 - Math.exp(-dt / 0.08);
-        s.players.forEach((p, i) => {
-          if (p.tx === undefined) return;
-          const k = i === 0 ? kSelf : kPeer;
-          p.x += (p.tx - p.x) * k;
-          p.y += (p.ty - p.y) * k;
-        });
+        const p2 = s.players[1];
+        if (p2.tx !== undefined) {
+          const kPeer = 1 - Math.exp(-dt / 0.08);
+          p2.x += (p2.tx - p2.x) * kPeer;
+          p2.y += (p2.ty - p2.y) * kPeer;
+        }
       }
 
-      // オンライン対戦：ホストは状態を送信、ゲストは自分の入力を送信（どちらも約20回/秒）
+      // オンライン対戦：ホストは状態を送信、ゲストは自分の入力を予測適用しつつ送信（どちらも約50回/秒）
       if (online) {
         sendAccum.current += dt;
         if (sendAccum.current > 0.02) {
+          const tickDt = sendAccum.current;
           sendAccum.current = 0;
           try {
             if (isHost) {
               ws.send(JSON.stringify({ type: "snapshot", payload: serializeState(s) }));
             } else {
-              ws.send(JSON.stringify({ type: "move", dx: guestMove?.mx ?? 0, dy: guestMove?.my ?? 0 }));
+              let mx = input.move.dx, my = input.move.dy;
+              if (keys["w"] || keys["arrowup"]) my -= 1;
+              if (keys["s"] || keys["arrowdown"]) my += 1;
+              if (keys["a"] || keys["arrowleft"]) mx -= 1;
+              if (keys["d"] || keys["arrowright"]) mx += 1;
+              const ml = Math.hypot(mx, my);
+              if (ml > 1) { mx /= ml; my /= ml; }
+
+              inputSeq.current += 1;
+              const seq = inputSeq.current;
+              const p1 = s.players[0];
+              stepPlayerMove(p1, mx, my, tickDt); // 結果を待たず自分だけその場で動かす（予測）
+              const al = Math.hypot(input.aim.dx, input.aim.dy);
+              if (al > 0.2) p1.face = Math.atan2(input.aim.dy, input.aim.dx);
+              else if (ml > 0.15) p1.face = Math.atan2(my, mx);
+
+              pendingInputs.current.push({ seq, mx, my, dt: tickDt });
+              if (pendingInputs.current.length > 200) pendingInputs.current.shift();
+
+              ws.send(JSON.stringify({ type: "move", seq, dx: mx, dy: my, dt: tickDt }));
               ws.send(JSON.stringify({ type: "aim", dx: input.aim.dx, dy: input.aim.dy, active: input.aim.id !== null }));
             }
             netSendCount.current += 1;
