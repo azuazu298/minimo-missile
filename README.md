@@ -1,24 +1,52 @@
 # minimo-missile
 
-合言葉でマッチングする対戦ゲーム。
+2人でリアルタイムに撃ち合う対戦ゲーム。オンライン対戦（WebRTC direct / 中継フォールバック）とBot対戦の両方に対応。
 
 ## 構成
-- `server/` … 合言葉マッチング＆状態中継用のWebSocketサーバー（Node.js）
-- `docs/` … ブラウザで動くクライアント（GitHub Pagesで公開）
+- `server/` … マッチング＆WebRTCシグナリング用のWebSocketサーバー（Node.js）。合言葉は使わず、部屋一覧方式。
+- `client/` … ゲーム本体（React + Vite）。ビルドすると `docs/` に出力される。
+- `docs/` … GitHub Pagesで公開される静的ファイル（`client` をビルドした成果物。直接編集しない）。
 
-## ローカルで動かす
+## ゲームの流れ
+1. ホーム画面で「ホストする」（ルール選択→待機）か「参加する」（部屋一覧から選択）
+2. 「能力あり」ルールの部屋では、マッチ後にお互い個別にサブ能力を選択（両者が選び終わると開始）
+3. 通信路（WebRTC、繋がらなければ中継）が確立してからカウントダウン→対戦開始
+4. 決着後は「もう一度プレイしますか？」に両者とも10秒以内に「はい」で回答すると、接続そのままに再戦。
+   「いいえ」や無回答（10秒経過）、通信切断は、両者とも強制的にホームへ戻り部屋も消える。
+
+「相手がいない？ BOTと対戦する」からはオフラインでBotとも対戦できる（サブ能力選択あり）。
+
+## サブ能力
+- **加護**：追加武器なし。体力120。ミサイルを3連続で命中させると30回復（外すとリセット）。
+- **雪鉄砲**：武器ボタンで発動（クールタイム1秒）。命中で相手を2.5秒行動不能（ダメージなし、被弾で即解除）。同じ相手には命中後4秒間再度効かない。
+- **TP弾**：武器ボタンで発動（クールタイム3秒）。命中地点へ自分がワープ（相手にはほぼ見えない）。ワープ後2秒以内にミサイルを命中させると32ダメージ。
+- **ロケットランチャー**：追加武器なし。タップ発射時のみ2倍サイズ・32ダメージの弾。障害物には3回当たるまで残る（同じTNTには再ヒットしない）。
+
+## ローカルでサーバーを動かす
 ```bash
 cd server
 npm install
 npm start
-# => minimo-missile server listening on 8787
 ```
-`docs/index.html` をブラウザで2つ開き（別タブでOK）、同じ合言葉で接続すると、
-矢印キーで動かした丸がお互いの画面に反映されます。
 
-## 本番デプロイ
+## ローカルでゲームを動かす（開発モード）
+```bash
+cd client
+npm install
+npm run dev
+```
+`base` を `/minimo-missile/` に設定しているため、末尾に `/minimo-missile/` を付けてアクセスする。
+例: `http://localhost:5173/minimo-missile/`
+
+## 本番用にビルドしてGitHub Pagesへ反映
+```bash
+cd client
+npm run build
+```
+`docs/` フォルダの中身が新しいビルド結果に置き換わる。そのまま `git add / commit / push` すれば反映される。
+
+## 本番デプロイ（初回のみ）
 1. このリポジトリをGitHubにpush
-2. Renderで `server/` をWebサービスとしてデプロイ
-3. 発行されたURL（`https://xxxx.onrender.com`）を `wss://xxxx.onrender.com` にして
-   `docs/index.html` の `SERVER_URL` を書き換えてpush
+2. Renderで `server/` をWebサービスとしてデプロイ（リージョンは対戦相手に近い場所を推奨）
+3. `client/src/App.jsx` の `SERVER_URL` を、Renderで発行されたURL（`wss://...`）に変更してビルド＆push
 4. GitHubのSettings → Pages で、Source: Deploy from a branch、Branch: main /docs を選択

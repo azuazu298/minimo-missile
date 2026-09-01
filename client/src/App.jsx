@@ -366,15 +366,15 @@ const TP_CD = 3.0;
 const ROCKET_SIZE_MULT = 2.0;
 const ROCKET_DMG = 32;
 const TP_BONUS_DMG = 32;
-const TP_BONUS_WINDOW = 1.0;
+const TP_BONUS_WINDOW = 2.0;
 const SNOW_IMMUNE = 4.0;
-const ROCKET_MAX_HITS = 2;
+const ROCKET_MAX_HITS = 3; // 1・2回目は無視して貫通、3回目で消える
 
 const PERKS = [
-  { id: "blessing", name: "加護", desc: "追加武器なし。体力120。ミサイルを3連続で命中させると30回復する。" },
-  { id: "snow", name: "雪鉄砲", desc: "武器ボタンで発動（クールタイム1秒）。命中させると相手を2.5秒動けなくする。ダメージはなし。" },
-  { id: "tp", name: "TP弾", desc: "武器ボタンで発動（クールタイム3秒）。命中地点まで自分がワープする。相手にはほぼ見えない。" },
-  { id: "rocket", name: "ロケットランチャー", desc: "追加武器なし。タップ発射時のみ、2倍サイズ・20ダメージの弾が出る。障害物に2回当たるまで残る。" },
+  { id: "blessing", name: "加護", desc: "追加武器なし。体力120。ミサイルを3連続で命中させると30回復する（外すと連続記録はリセット）。" },
+  { id: "snow", name: "雪鉄砲", desc: "武器ボタンで発動（クールタイム1秒）。命中させると相手を2.5秒動けなくする（ダメージなし、被弾すると即解除）。同じ相手には命中後4秒間、再度は効かない。" },
+  { id: "tp", name: "TP弾", desc: "武器ボタンで発動（クールタイム3秒）。命中地点まで自分がワープする。相手にはほぼ見えない。ワープ後2秒以内にミサイルを命中させると32ダメージになる。" },
+  { id: "rocket", name: "ロケットランチャー", desc: "追加武器なし。タップ発射時のみ、2倍サイズ・32ダメージの弾が出る。障害物には3回当たるまで残る（同じTNTには当たらない）。" },
 ];
 
 const WEAPON_META = {
@@ -557,7 +557,8 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
   }
 
   useEffect(() => {
-    beginCountdown();
+    if (!online) beginCountdown(); // オフライン(Bot戦)は即座に開始
+    // オンラインは接続(P2Pまたは中継)が確立してから開始する（下のconnectPeerのonReadyで呼ぶ）
     return () => { if (countdownIvRef.current) clearInterval(countdownIvRef.current); };
   }, []);
 
@@ -1265,6 +1266,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         if (kind === "p2p") {
           transport.onclose = () => { console.log("[battle] datachannel closed"); setDisconnected(true); };
         }
+        beginCountdown(); // お互いの通信路が確立してからカウントダウンを開始する
       });
       ws.onclose = () => { console.log("[battle] ws closed"); setDisconnected(true); };
       ws.onerror = (e) => console.log("[battle] ws error", e);
@@ -1509,7 +1511,8 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               for (let j = s.items.length - 1; j >= 0; j--) {
                 const it = s.items[j];
                 const h2 = L.CRATE / 2 + L.BR;
-                const hit = Math.abs(b.x - it.x) < h2 && Math.abs(b.y - it.y) < h2;
+                const alreadyArmed = it.type === "tnt" && it.fuse > 0; // 起爆準備中は素通り（再ヒットしない）
+                const hit = !alreadyArmed && Math.abs(b.x - it.x) < h2 && Math.abs(b.y - it.y) < h2;
                 if (!hit) continue;
                 if (it.type === "ammo") {
                   s.items.splice(j, 1);
@@ -2123,13 +2126,23 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
 
       {phase === "countdown" && (
         <div className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,.45)" }}>
-          <div
-            key={count}
-            className="countdown-num text-8xl font-black"
-            style={{ color: "#f3f6fb", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
-          >
-            {count > 0 ? count : "スタート"}
-          </div>
+          {online && netStatus === "connecting" ? (
+            <div className="flex flex-col items-center gap-3">
+              <span
+                className="search-ring inline-block h-8 w-8 rounded-full"
+                style={{ border: "3px solid rgba(255,255,255,.15)", borderTopColor: ACCENT, animation: "ringSpin .8s linear infinite" }}
+              />
+              <div className="text-sm" style={{ color: "#c7cbd1" }}>相手との接続を確立しています…</div>
+            </div>
+          ) : (
+            <div
+              key={count}
+              className="countdown-num text-8xl font-black"
+              style={{ color: "#f3f6fb", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+            >
+              {count > 0 ? count : "スタート"}
+            </div>
+          )}
         </div>
       )}
 
