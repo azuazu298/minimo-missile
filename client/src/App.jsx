@@ -567,9 +567,14 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
     s.players = swapped.map((p, i) => {
       const pos = denormPos(p.nx, p.ny);
       const prev = s.players[i] || {};
+      const hasPos = prev.x !== undefined && prev.y !== undefined;
       return {
         ...prev,
-        id: i, x: pos.x, y: pos.y, hp: p.hp, maxHp: p.maxHp, ammo: p.ammo, face: p.face,
+        id: i,
+        x: hasPos ? prev.x : pos.x, // 表示位置：滑らかに近づけていく
+        y: hasPos ? prev.y : pos.y,
+        tx: pos.x, ty: pos.y, // 目標位置：ホストから届いた最新値
+        hp: p.hp, maxHp: p.maxHp, ammo: p.ammo, face: p.face,
         flash: p.flash, frozen: p.frozen, perk: p.perk, combo: p.combo, weaponCd: p.weaponCd,
         snowImmuneT: p.snowImmuneT, tpBonusT: p.tpBonusT, color: i === 0 ? C.p1 : C.p2,
       };
@@ -1190,6 +1195,16 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
           } catch (err) {
             console.log("[battle] ws.send failed", err);
           }
+        }
+      }
+
+      // ゲスト側：届いた最新位置(tx,ty)に向かって毎フレーム滑らかに近づける
+      if (online && !isHost) {
+        const k = 1 - Math.exp(-dt / 0.08);
+        for (const p of s.players) {
+          if (p.tx === undefined) continue;
+          p.x += (p.tx - p.x) * k;
+          p.y += (p.ty - p.y) * k;
         }
       }
 
