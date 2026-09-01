@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 
 const ACCENT = "#5fd4e0"; // アプリ全体で使う唯一のネオンアクセント
-const SERVER_URL = "wss://minimo-missile-server.onrender.com";
+const SERVER_URL = "wss://minimo-missile-server-sg-xxxx.onrender.com";
 
 /* ============================================================
    ホーム画面
