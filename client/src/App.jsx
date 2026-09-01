@@ -1176,6 +1176,47 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       }
       s.shake *= Math.pow(0.001, dt);
 
+      // ゲスト側：自分のキャラはホストの返事を待たずその場で動かす（予測）。
+      // 相手キャラは今まで通り、届いた位置へ滑らかに近づけるだけ。
+      let guestMove = null;
+      if (online && !isHost) {
+        let mx = input.move.dx, my = input.move.dy;
+        if (keys["w"] || keys["arrowup"]) my -= 1;
+        if (keys["s"] || keys["arrowdown"]) my += 1;
+        if (keys["a"] || keys["arrowleft"]) mx -= 1;
+        if (keys["d"] || keys["arrowright"]) mx += 1;
+        const ml = Math.hypot(mx, my);
+        if (ml > 1) { mx /= ml; my /= ml; }
+        guestMove = { mx, my };
+
+        const p1 = s.players[0];
+        if (p1.frozen <= 0) {
+          p1.x += mx * L.SPEED * dt;
+          p1.y += my * L.SPEED * dt;
+          p1.x = clamp(p1.x, L.AR.x + L.PR, L.AR.x + L.AR.w - L.PR);
+          p1.y = clamp(p1.y, L.AR.y + L.PR, L.AR.y + L.AR.h - L.PR);
+        }
+        const al = Math.hypot(input.aim.dx, input.aim.dy);
+        if (al > 0.2) p1.face = Math.atan2(input.aim.dy, input.aim.dx);
+        else if (ml > 0.15) p1.face = Math.atan2(my, mx);
+
+        // ホストの本当の位置に、ズレが大きければ素早く・小さければゆっくり補正
+        if (p1.tx !== undefined) {
+          const drift = Math.hypot(p1.tx - p1.x, p1.ty - p1.y);
+          const tau = drift > L.cell ? 0.15 : 0.5;
+          const k1 = 1 - Math.exp(-dt / tau);
+          p1.x += (p1.tx - p1.x) * k1;
+          p1.y += (p1.ty - p1.y) * k1;
+        }
+
+        const p2 = s.players[1];
+        if (p2.tx !== undefined) {
+          const k2 = 1 - Math.exp(-dt / 0.08);
+          p2.x += (p2.tx - p2.x) * k2;
+          p2.y += (p2.ty - p2.y) * k2;
+        }
+      }
+
       // オンライン対戦：ホストは状態を送信、ゲストは自分の入力を送信（どちらも約20回/秒）
       if (online) {
         sendAccum.current += dt;
@@ -1185,7 +1226,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
             if (isHost) {
               ws.send(JSON.stringify({ type: "snapshot", payload: serializeState(s) }));
             } else {
-              ws.send(JSON.stringify({ type: "move", dx: input.move.dx, dy: input.move.dy }));
+              ws.send(JSON.stringify({ type: "move", dx: guestMove?.mx ?? 0, dy: guestMove?.my ?? 0 }));
               ws.send(JSON.stringify({ type: "aim", dx: input.aim.dx, dy: input.aim.dy, active: input.aim.id !== null }));
             }
             netSendCount.current += 1;
@@ -1195,16 +1236,6 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
           } catch (err) {
             console.log("[battle] ws.send failed", err);
           }
-        }
-      }
-
-      // ゲスト側：届いた最新位置(tx,ty)に向かって毎フレーム滑らかに近づける
-      if (online && !isHost) {
-        const k = 1 - Math.exp(-dt / 0.08);
-        for (const p of s.players) {
-          if (p.tx === undefined) continue;
-          p.x += (p.tx - p.x) * k;
-          p.y += (p.ty - p.y) * k;
         }
       }
 
