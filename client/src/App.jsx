@@ -1176,8 +1176,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       }
       s.shake *= Math.pow(0.001, dt);
 
-      // ゲスト側：自分のキャラはホストの返事を待たずその場で動かす（予測）。
-      // 相手キャラは今まで通り、届いた位置へ滑らかに近づけるだけ。
+      // ゲスト側：キーボード操作もまとめて、ホストに送る入力を計算しておく
       let guestMove = null;
       if (online && !isHost) {
         let mx = input.move.dx, my = input.move.dy;
@@ -1189,38 +1188,21 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
         if (ml > 1) { mx /= ml; my /= ml; }
         guestMove = { mx, my };
 
-        const p1 = s.players[0];
-        if (p1.frozen <= 0) {
-          p1.x += mx * L.SPEED * dt;
-          p1.y += my * L.SPEED * dt;
-          p1.x = clamp(p1.x, L.AR.x + L.PR, L.AR.x + L.AR.w - L.PR);
-          p1.y = clamp(p1.y, L.AR.y + L.PR, L.AR.y + L.AR.h - L.PR);
-        }
-        const al = Math.hypot(input.aim.dx, input.aim.dy);
-        if (al > 0.2) p1.face = Math.atan2(input.aim.dy, input.aim.dx);
-        else if (ml > 0.15) p1.face = Math.atan2(my, mx);
-
-        // ホストの本当の位置に、ズレが大きければ素早く・小さければゆっくり補正
-        if (p1.tx !== undefined) {
-          const drift = Math.hypot(p1.tx - p1.x, p1.ty - p1.y);
-          const tau = drift > L.cell ? 0.15 : 0.5;
-          const k1 = 1 - Math.exp(-dt / tau);
-          p1.x += (p1.tx - p1.x) * k1;
-          p1.y += (p1.ty - p1.y) * k1;
-        }
-
-        const p2 = s.players[1];
-        if (p2.tx !== undefined) {
-          const k2 = 1 - Math.exp(-dt / 0.08);
-          p2.x += (p2.tx - p2.x) * k2;
-          p2.y += (p2.ty - p2.y) * k2;
-        }
+        // 届いた位置(tx,ty)へ滑らかに近づける。自分は反応重視で少しきつめ、相手はこれまで通り
+        const kSelf = 1 - Math.exp(-dt / 0.045);
+        const kPeer = 1 - Math.exp(-dt / 0.08);
+        s.players.forEach((p, i) => {
+          if (p.tx === undefined) return;
+          const k = i === 0 ? kSelf : kPeer;
+          p.x += (p.tx - p.x) * k;
+          p.y += (p.ty - p.y) * k;
+        });
       }
 
       // オンライン対戦：ホストは状態を送信、ゲストは自分の入力を送信（どちらも約20回/秒）
       if (online) {
         sendAccum.current += dt;
-        if (sendAccum.current > 0.05) {
+        if (sendAccum.current > 0.033) {
           sendAccum.current = 0;
           try {
             if (isHost) {
