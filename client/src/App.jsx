@@ -1204,7 +1204,7 @@ function BattleScreen({ perk, ws, isHost = true, onExit, onRematch }) {
       // オンライン対戦：ホストは状態を送信、ゲストは自分の入力を送信（どちらも約20回/秒）
       if (online) {
         sendAccum.current += dt;
-        if (sendAccum.current > 0.033) {
+        if (sendAccum.current > 0.02) {
           sendAccum.current = 0;
           try {
             if (isHost) {
