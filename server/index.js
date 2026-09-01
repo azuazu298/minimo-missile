@@ -50,31 +50,35 @@ wss.on("connection", (ws) => {
       return; // 壊れたメッセージは無視
     }
 
+    if (msg.type === "host") {
+      const code = String(msg.code || "").trim();
+      if (!code) return;
+      if (ws.roomCode) leaveRoom(ws);
+
+      // ホストは常に「新しい待機」を開始する。古い（幽霊）部屋があれば上書きする
+      rooms.set(code, [ws]);
+      ws.roomCode = code;
+      ws.playerIndex = 0;
+      send(ws, { type: "hosting" });
+      return;
+    }
+
     if (msg.type === "join") {
       const code = String(msg.code || "").trim();
       if (!code) return;
-      if (ws.roomCode) leaveRoom(ws); // 二重参加防止
+      if (ws.roomCode) leaveRoom(ws);
 
-      let room = rooms.get(code);
-      if (!room) {
-        room = [];
-        rooms.set(code, room);
-      }
-      pruneRoom(room); // 古い（死んだ）接続を先に掃除してから判定する
-      if (room.length >= 2) {
-        send(ws, { type: "full" });
+      const room = rooms.get(code);
+      if (room) pruneRoom(room);
+      if (!room || room.length !== 1) {
+        send(ws, { type: "join-failed" });
         return;
       }
 
-      const playerIndex = room.length; // 0番目 or 1番目
       room.push(ws);
       ws.roomCode = code;
-      ws.playerIndex = playerIndex;
-      send(ws, { type: "joined", playerIndex });
-
-      if (room.length === 2) {
-        room.forEach((peer, i) => send(peer, { type: "matched", you: i }));
-      }
+      ws.playerIndex = 1;
+      room.forEach((peer, i) => send(peer, { type: "matched", you: i }));
       return;
     }
 
