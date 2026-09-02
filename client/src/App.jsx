@@ -770,7 +770,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     weaponDrag.current = { id: null, ox: 0, oy: 0, dx: 0, dy: 0, moved: false };
     setKnob({ dx: 0, dy: 0 });
     const s = gRef.current;
-    if (!s || s.over || phaseRef.current !== "playing") return;
+    if (!s || s.over !== null || phaseRef.current !== "playing") return;
     const p1 = s.players[0];
     if (p1.frozen > 0) return;
 
@@ -884,7 +884,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
   }
 
   function damage(s, p, amt) {
-    if (s.over) return;
+    if (s.over !== null) return;
     p.hp = clamp(p.hp - amt, 0, p.maxHp);
     p.flash = 0.25;
     p.frozen = 0; // 被弾したら凍結が即解除される
@@ -921,6 +921,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         c: Math.random() < 0.5 ? C.tnt : "#fff2a8" });
     }
     for (const p of s.players) {
+      if (s.over !== null) break; // 決着後は爆発のノックバックも発生させない
       const d = dist(p.x, p.y, x, y);
       if (d < L.EXPR + L.PR) {
         const f = 1 - clamp(d / (L.EXPR + L.PR), 0, 1);
@@ -1411,7 +1412,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       const rec = pending.get(e.pointerId);
       pending.delete(e.pointerId);
       const p1 = s.players[0];
-      const canAct = !s.over && phaseRef.current === "playing" && p1.frozen <= 0;
+      const canAct = s.over === null && phaseRef.current === "playing" && p1.frozen <= 0;
 
       const triggerFire = (dx, dy, viaTap) => {
         if (!p1.ammo) return; // 弾切れなら何も起きない（音も鳴らさない）
@@ -1454,7 +1455,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       s.t += dt;
       const p1 = s.players[0], p2 = s.players[1];
 
-      if (!s.over && phaseRef.current === "playing" && (!online || isHost)) {
+      if (s.over === null && phaseRef.current === "playing" && (!online || isHost)) {
         for (const p of s.players) {
           if (p.weaponCd > 0) p.weaponCd = Math.max(0, p.weaponCd - dt);
           if (p.frozen > 0) p.frozen = Math.max(0, p.frozen - dt);
@@ -1547,6 +1548,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         for (const e of toExplode) explode(s, e.x, e.y);
 
         for (let i = s.bullets.length - 1; i >= 0; i--) {
+          if (s.over !== null) break; // 同じフレーム内で決着がついたら、以降の弾は一切処理しない（勝った後の凍結事故防止）
           const b = s.bullets[i];
           b.t += dt;
           const lifeLimit = b.kind === "snow" ? SNOW_LIFE : b.kind === "tp" ? TP_LIFE : b.kind === "rocket" ? ROCKET_LIFE : B_LIFE;
@@ -1647,8 +1649,9 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
                   damage(s, p, dmg);
                   p.ammo = 0;
                   const l = Math.hypot(b.vx, b.vy) || 1;
-                  p.kx += (b.vx / l) * 200 * L.s;
-                  p.ky += (b.vy / l) * 200 * L.s;
+                  const kb = 200 * L.s * (b.kind === "rocket" ? 3 : 1);
+                  p.kx += (b.vx / l) * kb;
+                  p.ky += (b.vy / l) * kb;
                   s.shake = Math.max(s.shake, 5 * L.s);
                   spawnPoof(s, b.x, b.y, b.owner === 0 ? ["#ff8a72", "#ffdcd2"] : ["#72c9ff", "#d2ecff"],
                     { count: 8, speed: [60, 190], life: [0.14, 0.26], size: [2, 4] });
