@@ -167,7 +167,7 @@ function HomeScreen({ onStartBattle, onMatched }) {
 
   return (
     <div
-      className="relative flex min-h-screen w-full items-center justify-center px-5 py-10"
+      className="fixed inset-0 flex flex-col items-center overflow-hidden px-5 py-6"
       style={{ background: "#0b0d11", fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif" }}
     >
       <style>{`
@@ -179,16 +179,16 @@ function HomeScreen({ onStartBattle, onMatched }) {
         }
       `}</style>
 
-      <div className="w-full max-w-sm">
-        <div className="mb-10 text-center">
-          <h1
-            className="text-3xl font-bold sm:text-4xl"
-            style={{ color: "#eef0f3", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
-          >
-            minimo-missile
-          </h1>
-        </div>
+      <div className="mb-6 shrink-0 pt-4 text-center">
+        <h1
+          className="text-3xl font-bold sm:text-4xl"
+          style={{ color: "#eef0f3", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+        >
+          minimo-missile
+        </h1>
+      </div>
 
+      <div data-scrollable className="min-h-0 w-full max-w-sm flex-1 overflow-y-auto">
         {phase === "idle" && (
           <>
             <div className="mb-2 flex gap-2">
@@ -322,7 +322,9 @@ function HomeScreen({ onStartBattle, onMatched }) {
             </button>
           </div>
         )}
+      </div>
 
+      <div className="mt-3 w-full max-w-sm shrink-0 pb-2">
         <div className="flex items-center justify-between rounded-lg px-4 py-3" style={{ background: "#14171d" }}>
           <span className="text-sm font-medium" style={{ color: "#c7cbd1" }}>サウンド</span>
           <button
@@ -396,16 +398,18 @@ const WEAPON_META = {
 function PerkSelectScreen({ onSelect }) {
   return (
     <div
-      className="relative flex min-h-screen w-full items-center justify-center px-5 py-10"
+      className="fixed inset-0 flex flex-col items-center overflow-hidden px-5 py-6"
       style={{ background: "#0b0d11", fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif" }}
     >
-      <div className="w-full max-w-sm">
-        <h2 className="mb-2 text-center text-xl font-bold" style={{ color: "#eef0f3" }}>
+      <div className="w-full max-w-sm shrink-0 pt-4 text-center">
+        <h2 className="mb-2 text-xl font-bold" style={{ color: "#eef0f3" }}>
           サブ能力を選択
         </h2>
-        <p className="mb-8 text-center text-xs" style={{ color: "#6b7178" }}>
+        <p className="mb-6 text-xs" style={{ color: "#6b7178" }}>
           1つだけ選んで対戦に持ち込めます
         </p>
+      </div>
+      <div data-scrollable className="min-h-0 w-full max-w-sm flex-1 overflow-y-auto pb-4">
         <div className="flex flex-col gap-3">
           {PERKS.map((perk) => (
             <button
@@ -453,16 +457,18 @@ function OnlinePerkSelectScreen({ ws, onReady }) {
 
   return (
     <div
-      className="relative flex min-h-screen w-full items-center justify-center px-5 py-10"
+      className="fixed inset-0 flex flex-col items-center overflow-hidden px-5 py-6"
       style={{ background: "#0b0d11", fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif" }}
     >
-      <div className="w-full max-w-sm">
-        <h2 className="mb-2 text-center text-xl font-bold" style={{ color: "#eef0f3" }}>
+      <div className="w-full max-w-sm shrink-0 pt-4 text-center">
+        <h2 className="mb-2 text-xl font-bold" style={{ color: "#eef0f3" }}>
           サブ能力を選択
         </h2>
-        <p className="mb-8 text-center text-xs" style={{ color: "#6b7178" }}>
+        <p className="mb-6 text-xs" style={{ color: "#6b7178" }}>
           {myChoice ? "相手の選択を待っています…" : "1つだけ選んでください。両者が選び終わると対戦が始まります"}
         </p>
+      </div>
+      <div data-scrollable className="min-h-0 w-full max-w-sm flex-1 overflow-y-auto pb-4">
         <div className="flex flex-col gap-3">
           {PERKS.map((perk) => (
             <button
@@ -1207,50 +1213,6 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     }
   }
 
-  /* ページのスクロールを完全に止める */
-  useEffect(() => {
-    const html = document.documentElement, body = document.body;
-    const prev = { h: html.style.cssText, b: body.style.cssText };
-    for (const el of [html, body]) {
-      el.style.margin = "0";
-      el.style.padding = "0";
-      el.style.height = "100%";
-      el.style.overflow = "hidden";
-      el.style.overscrollBehavior = "none";
-      el.style.touchAction = "none";
-      el.style.position = "fixed";
-      el.style.inset = "0";
-    }
-
-    let meta = document.querySelector('meta[name="viewport"]');
-    const hadMeta = !!meta;
-    const prevContent = meta?.getAttribute("content") || "";
-    if (!meta) {
-      meta = document.createElement("meta");
-      meta.name = "viewport";
-      document.head.appendChild(meta);
-    }
-    meta.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no");
-
-    const block = (e) => {
-      if (e.target.closest("button, input, a, [role='switch'], [role='button']")) return;
-      e.preventDefault();
-    };
-    document.addEventListener("touchstart", block, { passive: false, capture: true });
-    document.addEventListener("touchmove", block, { passive: false, capture: true });
-    document.addEventListener("gesturestart", block, { passive: false, capture: true });
-
-    return () => {
-      html.style.cssText = prev.h;
-      body.style.cssText = prev.b;
-      if (hadMeta) meta.setAttribute("content", prevContent);
-      else meta.remove();
-      document.removeEventListener("touchstart", block, { capture: true });
-      document.removeEventListener("touchmove", block, { capture: true });
-      document.removeEventListener("gesturestart", block, { capture: true });
-    };
-  }, []);
-
   /* ---------- ループ ---------- */
   useEffect(() => {
     console.log("[battle] mount: online =", online, "isHost =", isHost, "ws readyState =", ws?.readyState);
@@ -1473,6 +1435,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           p2.x -= ux * ov; p2.y -= uy * ov;
         }
 
+        const toExplode = [];
         for (let i = s.items.length - 1; i >= 0; i--) {
           const it = s.items[i];
           let removed = false;
@@ -1491,13 +1454,17 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           } else if (it.type === "tnt") {
             if (it.fuse > 0) {
               it.fuse -= dt;
-              if (it.fuse <= 0) { s.items.splice(i, 1); explode(s, it.x, it.y); }
+              if (it.fuse <= 0) { s.items.splice(i, 1); toExplode.push({ x: it.x, y: it.y }); }
             } else if (s.t - it.born > 8) {
               s.items.splice(i, 1);
               spawnPoof(s, it.x, it.y, [C.tnt, "#ffd7b0"], { count: 6, speed: [20, 70], life: [0.2, 0.36], size: [2, 4] });
             }
           }
         }
+        // 爆発はここ（アイテム一覧の走査が終わったあと）でまとめて起こす。
+        // ループの途中でexplode()を呼ぶと、連鎖爆発でs.itemsの中身が
+        // 想定より大きく減り、存在しない要素を読みに行ってフリーズしていた。
+        for (const e of toExplode) explode(s, e.x, e.y);
 
         for (let i = s.bullets.length - 1; i >= 0; i--) {
           const b = s.bullets[i];
@@ -2234,7 +2201,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           ) : (
             <div
               key={count}
-              className="countdown-num text-8xl font-black"
+              className={`countdown-num font-black ${count > 0 ? "text-8xl" : "text-5xl"}`}
               style={{ color: "#f3f6fb", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
             >
               {count > 0 ? count : "スタート"}
@@ -2331,6 +2298,51 @@ export default function App() {
   const [perk, setPerk] = useState(null); // Bot対戦 or オンラインでの自分の選択
   const [peerPerk, setPeerPerk] = useState(null); // オンラインでの相手の選択
   const [netMatch, setNetMatch] = useState(null); // { ws, isHost, rules } | null
+
+  /* アプリ全体でページのスクロールを完全に止める。
+     [data-scrollable] を付けた要素の中だけは、指でスクロールできるようにする。 */
+  useEffect(() => {
+    const html = document.documentElement, body = document.body;
+    const prev = { h: html.style.cssText, b: body.style.cssText };
+    for (const el of [html, body]) {
+      el.style.margin = "0";
+      el.style.padding = "0";
+      el.style.height = "100%";
+      el.style.overflow = "hidden";
+      el.style.overscrollBehavior = "none";
+      el.style.touchAction = "none";
+      el.style.position = "fixed";
+      el.style.inset = "0";
+    }
+
+    let meta = document.querySelector('meta[name="viewport"]');
+    const hadMeta = !!meta;
+    const prevContent = meta?.getAttribute("content") || "";
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.name = "viewport";
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no");
+
+    const block = (e) => {
+      if (e.target.closest("button, input, a, [role='switch'], [role='button'], [data-scrollable]")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("touchstart", block, { passive: false, capture: true });
+    document.addEventListener("touchmove", block, { passive: false, capture: true });
+    document.addEventListener("gesturestart", block, { passive: false, capture: true });
+
+    return () => {
+      html.style.cssText = prev.h;
+      body.style.cssText = prev.b;
+      if (hadMeta) meta.setAttribute("content", prevContent);
+      else meta.remove();
+      document.removeEventListener("touchstart", block, { capture: true });
+      document.removeEventListener("touchmove", block, { capture: true });
+      document.removeEventListener("gesturestart", block, { capture: true });
+    };
+  }, []);
 
   const goPerks = () => setScreen("perks");
   const choosePerk = (id) => {
