@@ -3,6 +3,69 @@ import { useRef, useEffect, useState } from "react";
 const ACCENT = "#5fd4e0"; // アプリ全体で使う唯一のネオンアクセント
 const SERVER_URL = "wss://minimo-missile-server-sg.onrender.com";
 
+/* ============================================================
+   効果音（外部音源を使わず、その場で合成する）
+   ============================================================ */
+let audioCtx = null;
+function getAudioCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (!audioCtx) audioCtx = new AC();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+
+function beep(freq, duration, type = "sine", gainStart = 0.12, freqEnd = null) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, ctx.currentTime);
+  if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, ctx.currentTime + duration);
+  gain.gain.setValueAtTime(gainStart, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + duration);
+}
+
+function noiseBurst(duration, gainStart = 0.28, filterFreq = 700) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * duration));
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(filterFreq, ctx.currentTime);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(gainStart, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+  src.connect(filter).connect(gain).connect(ctx.destination);
+  src.start();
+}
+
+let soundEnabled = true;
+function setSoundEnabled(v) { soundEnabled = v; }
+
+const sfx = {
+  fire: () => { if (soundEnabled) beep(880, 0.08, "square", 0.07, 440); },
+  hit: () => { if (soundEnabled) beep(180, 0.16, "sawtooth", 0.13, 90); },
+  hitEnemy: () => { if (soundEnabled) beep(260, 0.1, "sawtooth", 0.08, 130); },
+  pickup: () => { if (soundEnabled) beep(660, 0.09, "sine", 0.09, 1000); },
+  explosion: () => { if (soundEnabled) noiseBurst(0.35, 0.3, 700); },
+  countdownBeep: () => { if (soundEnabled) beep(520, 0.1, "sine", 0.09); },
+  countdownGo: () => { if (soundEnabled) beep(780, 0.22, "sine", 0.13, 1040); },
+  win: () => { if (soundEnabled) [660, 880, 1100].forEach((f, i) => setTimeout(() => beep(f, 0.18, "sine", 0.12), i * 90)); },
+  lose: () => { if (soundEnabled) [440, 330, 220].forEach((f, i) => setTimeout(() => beep(f, 0.22, "sawtooth", 0.09), i * 110)); },
+  mark: () => { if (soundEnabled) beep(320, 0.14, "triangle", 0.1, 200); },
+  click: () => { if (soundEnabled) beep(500, 0.04, "square", 0.05); },
+};
+
 /**
  * 合言葉サーバー(ws)を「お見合い」だけに使い、実際のゲームデータは
  * できるだけ直接（WebRTC）でやり取りする。8秒以内に繋がらなければ
@@ -72,8 +135,7 @@ function connectPeer(ws, isHost, onReady) {
 /* ============================================================
    ホーム画面
    ============================================================ */
-function HomeScreen({ onStartBattle, onMatched }) {
-  const [soundOn, setSoundOn] = useState(true);
+function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn }) {
   // idle | host-rules | hosting | room-list | joining | join-failed
   const [phase, setPhase] = useState("idle");
   const [rooms, setRooms] = useState([]);
@@ -188,7 +250,7 @@ function HomeScreen({ onStartBattle, onMatched }) {
         </h1>
       </div>
 
-      <div data-scrollable className="min-h-0 w-full max-w-sm flex-1 overflow-y-auto">
+      <div data-scrollable className="flex min-h-0 w-full max-w-sm flex-1 flex-col justify-center overflow-y-auto">
         {phase === "idle" && (
           <>
             <div className="mb-2 flex gap-2">
@@ -330,7 +392,7 @@ function HomeScreen({ onStartBattle, onMatched }) {
           <button
             role="switch"
             aria-checked={soundOn}
-            onClick={() => setSoundOn((v) => !v)}
+            onClick={() => { setSoundOn((v) => { const nv = !v; setSoundEnabled(nv); if (nv) sfx.click(); return nv; }); }}
             className="relative h-6 w-11 rounded-full transition-colors duration-150"
             style={{ background: soundOn ? "rgba(95,212,224,.28)" : "rgba(255,255,255,.1)" }}
           >
@@ -409,7 +471,7 @@ function PerkSelectScreen({ onSelect }) {
           1つだけ選んで対戦に持ち込めます
         </p>
       </div>
-      <div data-scrollable className="min-h-0 w-full max-w-sm flex-1 overflow-y-auto pb-4">
+      <div data-scrollable className="flex min-h-0 w-full max-w-sm flex-1 flex-col justify-center overflow-y-auto pb-4">
         <div className="flex flex-col gap-3">
           {PERKS.map((perk) => (
             <button
@@ -468,7 +530,7 @@ function OnlinePerkSelectScreen({ ws, onReady }) {
           {myChoice ? "相手の選択を待っています…" : "1つだけ選んでください。両者が選び終わると対戦が始まります"}
         </p>
       </div>
-      <div data-scrollable className="min-h-0 w-full max-w-sm flex-1 overflow-y-auto pb-4">
+      <div data-scrollable className="flex min-h-0 w-full max-w-sm flex-1 flex-col justify-center overflow-y-auto pb-4">
         <div className="flex flex-col gap-3">
           {PERKS.map((perk) => (
             <button
@@ -533,6 +595,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
   };
   const netInput = useRef({ moveDx: 0, moveDy: 0, aimDx: 0, aimDy: 0, aimActive: false });
   const netInputQueue = useRef([]); // ホスト用：ゲストから届いた入力を順番に積むキュー
+  const audioPrev = useRef({ hp1: -1, hp2: -1, ammo1: 0, ammo2: 0, boomCount: 0, winner: undefined });
   const lastAckSeq = useRef(0); // ホスト用：どこまで処理したか
   const inputSeq = useRef(0); // ゲスト用：自分の入力の通し番号
   const pendingInputs = useRef([]); // ゲスト用：まだホストに確認されていない入力の履歴
@@ -557,14 +620,17 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     let n = 3;
     setCount(3);
     setPhase("countdown");
+    sfx.countdownBeep();
     countdownIvRef.current = setInterval(() => {
       n -= 1;
       if (n > 0) {
         setCount(n);
+        sfx.countdownBeep();
       } else {
         clearInterval(countdownIvRef.current);
         countdownIvRef.current = null;
         setCount(0);
+        sfx.countdownGo();
         setTimeout(() => setPhase("playing"), 550);
       }
     }, 800);
@@ -708,6 +774,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         ? { dx: Math.cos(p1.face), dy: Math.sin(p1.face) }
         : null;
     if (!dir) return;
+    sfx[isCalamity ? "mark" : "fire"]();
 
     if (online && !isHost) {
       sendMsg({ type: "weaponfire", dx: dir.dx, dy: dir.dy });
@@ -1336,6 +1403,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       const canAct = !s.over && phaseRef.current === "playing" && p1.frozen <= 0;
 
       const triggerFire = (dx, dy, viaTap) => {
+        sfx.fire();
         if (online && !isHost) sendMsg({ type: "fire", dx, dy, viaTap });
         else fire(s, p1, dx, dy, { viaTap });
       };
@@ -1688,6 +1756,20 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
             console.log("[battle] ws.send failed", err);
           }
         }
+      }
+
+      // 効果音：前フレームとの差分から、被弾・爆発・取得・勝敗を検知して鳴らす
+      {
+        const prevA = audioPrev.current;
+        const p1a = s.players[0], p2a = s.players[1];
+        if (prevA.hp1 >= 0 && p1a.hp < prevA.hp1) sfx.hit();
+        if (prevA.hp2 >= 0 && p2a.hp < prevA.hp2) sfx.hitEnemy();
+        if (prevA.ammo1 === 0 && p1a.ammo === 1) sfx.pickup();
+        if (s.booms.length > prevA.boomCount) sfx.explosion();
+        if (prevA.winner === null && s.over !== null) { if (s.over === 0) sfx.win(); else sfx.lose(); }
+        prevA.hp1 = p1a.hp; prevA.hp2 = p2a.hp;
+        prevA.ammo1 = p1a.ammo; prevA.ammo2 = p2a.ammo;
+        prevA.boomCount = s.booms.length; prevA.winner = s.over;
       }
 
       draw(ctx, s, input);
@@ -2298,6 +2380,9 @@ export default function App() {
   const [perk, setPerk] = useState(null); // Bot対戦 or オンラインでの自分の選択
   const [peerPerk, setPeerPerk] = useState(null); // オンラインでの相手の選択
   const [netMatch, setNetMatch] = useState(null); // { ws, isHost, rules } | null
+  const [soundOn, setSoundOn] = useState(true);
+
+  useEffect(() => { setSoundEnabled(soundOn); }, [soundOn]);
 
   /* アプリ全体でページのスクロールを完全に止める。
      [data-scrollable] を付けた要素の中だけは、指でスクロールできるようにする。 */
@@ -2379,7 +2464,7 @@ export default function App() {
     setScreen("home");
   };
 
-  if (screen === "home") return <HomeScreen onStartBattle={goPerks} onMatched={onMatched} />;
+  if (screen === "home") return <HomeScreen onStartBattle={goPerks} onMatched={onMatched} soundOn={soundOn} setSoundOn={setSoundOn} />;
   if (screen === "perks") return <PerkSelectScreen onSelect={choosePerk} />;
   if (screen === "online-perks") return <OnlinePerkSelectScreen ws={netMatch.ws} onReady={onlinePerksReady} />;
   return (
