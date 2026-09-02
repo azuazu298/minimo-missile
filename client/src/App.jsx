@@ -53,16 +53,21 @@ let soundEnabled = true;
 function setSoundEnabled(v) { soundEnabled = v; }
 
 const sfx = {
-  fire: () => { if (soundEnabled) beep(880, 0.08, "square", 0.07, 440); },
+  fire: () => { if (soundEnabled) beep(880, 0.08, "square", 0.07, 440); }, // 普通の弾
+  snowFire: () => { if (soundEnabled) beep(1300, 0.12, "sine", 0.08, 1900); }, // 雪像の弾
+  tpFire: () => { if (soundEnabled) beep(1100, 0.13, "sawtooth", 0.07, 260); }, // TP弾
+  rocketFire: () => { if (soundEnabled) { noiseBurst(0.14, 0.16, 260); beep(140, 0.22, "sawtooth", 0.13, 70); } }, // 怪力弾
+  heal: () => { if (soundEnabled) [520, 720, 940].forEach((f, i) => setTimeout(() => beep(f, 0.14, "sine", 0.09), i * 55)); }, // 加護の回復
   hit: () => { if (soundEnabled) beep(180, 0.16, "sawtooth", 0.13, 90); },
   hitEnemy: () => { if (soundEnabled) beep(260, 0.1, "sawtooth", 0.08, 130); },
   pickup: () => { if (soundEnabled) beep(660, 0.09, "sine", 0.09, 1000); },
-  explosion: () => { if (soundEnabled) noiseBurst(0.35, 0.3, 700); },
+  explosion: () => { if (soundEnabled) noiseBurst(0.35, 0.3, 700); }, // TNT
+  calamityBoom: () => { if (soundEnabled) { noiseBurst(0.55, 0.34, 380); beep(85, 0.5, "sine", 0.16, 40); } }, // 厄災発生
   countdownBeep: () => { if (soundEnabled) beep(520, 0.1, "sine", 0.09); },
   countdownGo: () => { if (soundEnabled) beep(780, 0.22, "sine", 0.13, 1040); },
   win: () => { if (soundEnabled) [660, 880, 1100].forEach((f, i) => setTimeout(() => beep(f, 0.18, "sine", 0.12), i * 90)); },
   lose: () => { if (soundEnabled) [440, 330, 220].forEach((f, i) => setTimeout(() => beep(f, 0.22, "sawtooth", 0.09), i * 110)); },
-  mark: () => { if (soundEnabled) beep(320, 0.14, "triangle", 0.1, 200); },
+  mark: () => { if (soundEnabled) beep(320, 0.14, "triangle", 0.1, 200); }, // 厄災の設置
   click: () => { if (soundEnabled) beep(500, 0.04, "square", 0.05); },
 };
 
@@ -229,7 +234,7 @@ function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn }) {
 
   return (
     <div
-      className="fixed inset-0 flex flex-col items-center overflow-hidden px-5 py-6"
+      className="fixed inset-0 flex items-center justify-center overflow-hidden px-5 py-6"
       style={{ background: "#0b0d11", fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif" }}
     >
       <style>{`
@@ -241,17 +246,18 @@ function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn }) {
         }
       `}</style>
 
-      <div className="mb-6 shrink-0 pt-4 text-center">
-        <h1
-          className="text-3xl font-bold sm:text-4xl"
-          style={{ color: "#eef0f3", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
-        >
-          minimo-missile
-        </h1>
-      </div>
+      <div className="flex max-h-full w-full max-w-sm flex-col">
+        <div className="mb-8 shrink-0 text-center">
+          <h1
+            className="text-3xl font-bold sm:text-4xl"
+            style={{ color: "#eef0f3", fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+          >
+            minimo-missile
+          </h1>
+        </div>
 
-      <div data-scrollable className="flex min-h-0 w-full max-w-sm flex-1 flex-col justify-center overflow-y-auto">
-        {phase === "idle" && (
+        <div data-scrollable className="min-h-0 flex-1 overflow-y-auto">
+          {phase === "idle" && (
           <>
             <div className="mb-2 flex gap-2">
               <button
@@ -384,26 +390,27 @@ function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn }) {
             </button>
           </div>
         )}
-      </div>
+        </div>
 
-      <div className="mt-3 w-full max-w-sm shrink-0 pb-2">
-        <div className="flex items-center justify-between rounded-lg px-4 py-3" style={{ background: "#14171d" }}>
-          <span className="text-sm font-medium" style={{ color: "#c7cbd1" }}>サウンド</span>
-          <button
-            role="switch"
-            aria-checked={soundOn}
-            onClick={() => { setSoundOn((v) => { const nv = !v; setSoundEnabled(nv); if (nv) sfx.click(); return nv; }); }}
-            className="relative h-6 w-11 rounded-full transition-colors duration-150"
-            style={{ background: soundOn ? "rgba(95,212,224,.28)" : "rgba(255,255,255,.1)" }}
-          >
-            <span
-              className="absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all duration-150"
-              style={{
-                left: soundOn ? "calc(100% - 1.375rem)" : "0.25rem",
-                background: soundOn ? ACCENT : "#8a8f96",
-              }}
-            />
-          </button>
+        <div className="mt-6 w-full shrink-0">
+          <div className="flex items-center justify-between rounded-lg px-4 py-3" style={{ background: "#14171d" }}>
+            <span className="text-sm font-medium" style={{ color: "#c7cbd1" }}>サウンド</span>
+            <button
+              role="switch"
+              aria-checked={soundOn}
+              onClick={() => { setSoundOn((v) => { const nv = !v; setSoundEnabled(nv); if (nv) sfx.click(); return nv; }); }}
+              className="relative h-6 w-11 rounded-full transition-colors duration-150"
+              style={{ background: soundOn ? "rgba(95,212,224,.28)" : "rgba(255,255,255,.1)" }}
+            >
+              <span
+                className="absolute top-1/2 h-4.5 w-4.5 -translate-y-1/2 rounded-full transition-all duration-150"
+                style={{
+                  left: soundOn ? "calc(100% - 1.375rem)" : "0.25rem",
+                  background: soundOn ? ACCENT : "#8a8f96",
+                }}
+              />
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -774,7 +781,11 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         ? { dx: Math.cos(p1.face), dy: Math.sin(p1.face) }
         : null;
     if (!dir) return;
-    sfx[isCalamity ? "mark" : "fire"]();
+    if (p1.weaponCd > 0) return; // クールタイム中は何も起きない（音も鳴らさない）
+
+    if (p1.perk === "snow") sfx.snowFire();
+    else if (p1.perk === "tp") sfx.tpFire();
+    else if (isCalamity) sfx.mark();
 
     if (online && !isHost) {
       sendMsg({ type: "weaponfire", dx: dir.dx, dy: dir.dy });
@@ -1403,7 +1414,8 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       const canAct = !s.over && phaseRef.current === "playing" && p1.frozen <= 0;
 
       const triggerFire = (dx, dy, viaTap) => {
-        sfx.fire();
+        if (!p1.ammo) return; // 弾切れなら何も起きない（音も鳴らさない）
+        sfx[viaTap && p1.perk === "rocket" ? "rocketFire" : "fire"]();
         if (online && !isHost) sendMsg({ type: "fire", dx, dy, viaTap });
         else fire(s, p1, dx, dy, { viaTap });
       };
@@ -1672,7 +1684,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               damage(s, p, CALAMITY_DMG);
             }
           }
-          s.booms.push({ x: hz.x, y: hz.y, t: 0, col: C.tnt });
+          s.booms.push({ x: hz.x, y: hz.y, t: 0, col: C.tnt, kind: "calamity" });
           spawnPoof(s, hz.x, hz.y, [C.tnt, "#ffd7b0", "#fff2a8"], { count: 18, speed: [50, 190], life: [0.25, 0.45], size: [3, 6] });
           s.shake = Math.max(s.shake, 16 * L.s);
           s.hazards.splice(i, 1);
@@ -1758,14 +1770,24 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         }
       }
 
-      // 効果音：前フレームとの差分から、被弾・爆発・取得・勝敗を検知して鳴らす
+      // 効果音：前フレームとの差分から、被弾・回復・爆発・取得・勝敗を検知して鳴らす
       {
         const prevA = audioPrev.current;
         const p1a = s.players[0], p2a = s.players[1];
-        if (prevA.hp1 >= 0 && p1a.hp < prevA.hp1) sfx.hit();
-        if (prevA.hp2 >= 0 && p2a.hp < prevA.hp2) sfx.hitEnemy();
+        if (prevA.hp1 >= 0) {
+          if (p1a.hp < prevA.hp1) sfx.hit();
+          else if (p1a.hp > prevA.hp1) sfx.heal();
+        }
+        if (prevA.hp2 >= 0) {
+          if (p2a.hp < prevA.hp2) sfx.hitEnemy();
+          else if (p2a.hp > prevA.hp2) sfx.heal();
+        }
         if (prevA.ammo1 === 0 && p1a.ammo === 1) sfx.pickup();
-        if (s.booms.length > prevA.boomCount) sfx.explosion();
+        if (s.booms.length > prevA.boomCount) {
+          for (let bi = prevA.boomCount; bi < s.booms.length; bi++) {
+            sfx[s.booms[bi].kind === "calamity" ? "calamityBoom" : "explosion"]();
+          }
+        }
         if (prevA.winner === null && s.over !== null) { if (s.over === 0) sfx.win(); else sfx.lose(); }
         prevA.hp1 = p1a.hp; prevA.hp2 = p2a.hp;
         prevA.ammo1 = p1a.ammo; prevA.ammo2 = p2a.ammo;
