@@ -354,7 +354,7 @@ const BLESSING_HP = 120;
 const BLESSING_HEAL = 30;
 const BLESSING_COMBO_NEEDED = 3;
 
-const SNOW_SPEED_MULT = 1.3;
+const SNOW_SPEED_MULT = 1.5;
 const SNOW_LIFE = 1.0;
 const SNOW_FREEZE = 2.5;
 const SNOW_CD = 1.0;
@@ -364,22 +364,30 @@ const TP_LIFE = 1.6;
 const TP_CD = 3.0;
 
 const ROCKET_SIZE_MULT = 2.0;
-const ROCKET_DMG = 32;
-const TP_BONUS_DMG = 32;
+const ROCKET_DMG = 32; // 通常ミサイル(16)の2倍
+const ROCKET_LIFE = 2.5; // 3回当たるか2.5秒経つと消える
+const TP_BONUS_DMG = 32; // 通常ミサイル(16)の2倍
 const TP_BONUS_WINDOW = 2.0;
 const SNOW_IMMUNE = 4.0;
 const ROCKET_MAX_HITS = 3; // 1・2回目は無視して貫通、3回目で消える
 
+const CALAMITY_CD = 4.0;
+const CALAMITY_DELAY = 3.0; // 指定してから発動までの時間
+const CALAMITY_DMG = 60;
+const CALAMITY_HALF = 1.5; // 3x3マス分の半幅（マス単位。実際のpxはL.cell*これ）
+
 const PERKS = [
-  { id: "blessing", name: "加護", desc: "追加武器なし。体力120。ミサイルを3連続で命中させると30回復する（外すと連続記録はリセット）。" },
-  { id: "snow", name: "雪鉄砲", desc: "武器ボタンで発動（クールタイム1秒）。命中させると相手を2.5秒動けなくする（ダメージなし、被弾すると即解除）。同じ相手には命中後4秒間、再度は効かない。" },
-  { id: "tp", name: "TP弾", desc: "武器ボタンで発動（クールタイム3秒）。命中地点まで自分がワープする。相手にはほぼ見えない。ワープ後2秒以内にミサイルを命中させると32ダメージになる。" },
-  { id: "rocket", name: "ロケットランチャー", desc: "追加武器なし。タップ発射時のみ、2倍サイズ・32ダメージの弾が出る。障害物には3回当たるまで残る（同じTNTには当たらない）。" },
+  { id: "blessing", name: "加護", desc: "体力120（通常の1.2倍）。ミサイルを3回連続で命中させると30回復する（外すと連続記録はリセット）。" },
+  { id: "snow", name: "雪像", desc: "特殊ボタンで発動（クールタイム1秒・弾速1.5倍）。命中させると相手を2.5秒間動けなくする。同じ相手には4秒間、再度は効かない。" },
+  { id: "tp", name: "テレポート", desc: "特殊ボタンで発動（クールタイム3秒・弾速2倍）。命中地点まで自分がワープする。ワープ後2秒以内にミサイルを命中させると通常の2倍のダメージを与えられる。" },
+  { id: "rocket", name: "怪力", desc: "タップ発射時のみ発動。2倍サイズ、2倍ダメージの弾が出る。障害物には3回当たるか2.5秒経つまで消えない（同じTNTには再ヒットしない）。" },
+  { id: "calamity", name: "厄災", desc: "特殊ボタン長押しで発動（クールタイム4秒・タップしても反応しない）。タイル3×3を指定して、3秒後その範囲に60ダメージ。本人はそのダメージを受けない。アイテムへの影響はない。" },
 ];
 
 const WEAPON_META = {
   snow: { icon: "❄", cdMax: SNOW_CD },
   tp: { icon: "⇝", cdMax: TP_CD },
+  calamity: { icon: "☄", cdMax: CALAMITY_CD },
 };
 
 /* ============================================================
@@ -687,15 +695,21 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     const p1 = s.players[0];
     if (p1.frozen > 0) return;
 
+    const isCalamity = p1.perk === "calamity";
     const dir = moved && Math.hypot(dx, dy) > 0.2
       ? { dx, dy }
-      : !moved
+      : (!moved && !isCalamity) // 厄災はタップ（狙わない発動）を受け付けない
         ? { dx: Math.cos(p1.face), dy: Math.sin(p1.face) }
         : null;
     if (!dir) return;
 
-    if (online && !isHost) sendMsg({ type: "weaponfire", dx: dir.dx, dy: dir.dy });
-    else fireWeapon(s, p1, dir.dx, dir.dy);
+    if (online && !isHost) {
+      sendMsg({ type: "weaponfire", dx: dir.dx, dy: dir.dy });
+    } else if (isCalamity) {
+      fireCalamity(s, p1, dir.dx, dir.dy);
+    } else {
+      fireWeapon(s, p1, dir.dx, dir.dy);
+    }
   }
 
   /* レイアウト（画面サイズに合わせて毎回計算） */
@@ -754,7 +768,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           hp: p1Max, maxHp: p1Max, ammo: 0, color: C.p2, bot: true, flash: 0, face: (Math.PI * 3) / 4,
           think: 0, wander: { x: 0, y: 0 }, aimHold: 0, perk: guestPerk || null, combo: 0, weaponCd: 0, frozen: 0, tpBonusT: 0, snowImmuneT: 0 },
       ],
-      bullets: [], items: [], booms: [], shards: [], poofs: [], dmgPopups: [],
+      bullets: [], items: [], booms: [], shards: [], poofs: [], dmgPopups: [], hazards: [],
       spawnT: 0, over: null, shake: 0, t: 0,
     };
     for (let i = 0; i < 3; i++) spawnItem(s, "tnt");
@@ -879,6 +893,28 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     });
   }
 
+  // 厄災：ドラッグした方向・距離をもとに、3x3マスが必ず収まる位置へスナップした的を返す
+  function calamityTarget(p, dx, dy) {
+    const MAX_RANGE = L.cell * 4.5;
+    const tx = p.x + dx * MAX_RANGE;
+    const ty = p.y + dy * MAX_RANGE;
+    let cx = Math.round((tx - L.AR.x - L.cell / 2) / L.cell);
+    let cy = Math.round((ty - L.AR.y - L.cell / 2) / L.cell);
+    cx = clamp(cx, 1, COLS - 2);
+    cy = clamp(cy, 1, ROWS - 2);
+    return { x: L.AR.x + cx * L.cell + L.cell / 2, y: L.AR.y + cy * L.cell + L.cell / 2 };
+  }
+
+  function fireCalamity(s, p, dx, dy) {
+    if (p.perk !== "calamity") return;
+    if (p.weaponCd > 0) return;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.01) return;
+    p.weaponCd = CALAMITY_CD;
+    const t = calamityTarget(p, dx, dy);
+    s.hazards.push({ x: t.x, y: t.y, t: 0, life: CALAMITY_DELAY, ownerId: p.id });
+  }
+
   /* ---------- オンライン対戦用の通信ヘルパー ---------- */
   function normPos(x, y) {
     return { nx: (x - L.AR.x) / L.AR.w, ny: (y - L.AR.y) / L.AR.h };
@@ -908,6 +944,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         t: d.t, life: d.life, text: d.text, color: d.color,
       })),
       poofs: s.poofs.map((f) => ({ ...toN(f.x, f.y), t: f.t, life: f.life, size: f.size / (L.AR.w || 1), c: f.c })),
+      hazards: s.hazards.map((h) => ({ ...toN(h.x, h.y), t: h.t, life: h.life, ownerId: h.ownerId })),
     };
   }
 
@@ -993,6 +1030,11 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     s.poofs = (payload.poofs || []).map((f) => {
       const pos = denormPos(f.nx, f.ny);
       return { x: pos.x, y: pos.y, vx: 0, vy: 0, t: f.t, life: f.life, size: (f.size || 0) * L.AR.w, c: f.c };
+    });
+
+    s.hazards = (payload.hazards || []).map((h) => {
+      const pos = denormPos(h.nx, h.ny);
+      return { x: pos.x, y: pos.y, t: h.t, life: h.life, ownerId: h.ownerId === 0 ? 1 : 0 };
     });
 
     s.shards = [];
@@ -1230,6 +1272,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         };
         s.players.forEach(remap);
         s.items.forEach(remap);
+        s.hazards.forEach(remap);
         s.bullets.forEach((b) => { remap(b); b.vx *= k; b.vy *= k; b.trail = []; });
       }
     });
@@ -1250,7 +1293,10 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         }
         else if (msg.type === "aim") { netInput.current.aimDx = msg.dx; netInput.current.aimDy = msg.dy; netInput.current.aimActive = msg.active; }
         else if (msg.type === "fire") { fire(s, p2, msg.dx, msg.dy, { viaTap: msg.viaTap }); }
-        else if (msg.type === "weaponfire") { fireWeapon(s, p2, msg.dx, msg.dy); }
+        else if (msg.type === "weaponfire") {
+          if (p2.perk === "calamity") fireCalamity(s, p2, msg.dx, msg.dy);
+          else fireWeapon(s, p2, msg.dx, msg.dy);
+        }
       } else {
         if (msg.type === "snapshot") applySnapshot(msg.payload);
       }
@@ -1456,7 +1502,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         for (let i = s.bullets.length - 1; i >= 0; i--) {
           const b = s.bullets[i];
           b.t += dt;
-          const lifeLimit = b.kind === "snow" ? SNOW_LIFE : b.kind === "tp" ? TP_LIFE : B_LIFE;
+          const lifeLimit = b.kind === "snow" ? SNOW_LIFE : b.kind === "tp" ? TP_LIFE : b.kind === "rocket" ? ROCKET_LIFE : B_LIFE;
           if (b.t > lifeLimit) {
             if (b.kind === "normal" || b.kind === "rocket") registerShotOutcome(s, b.owner, false);
             spawnPoof(s, b.x, b.y, b.owner === 0 ? ["#ff8a72", "#ffdcd2"] : ["#72c9ff", "#d2ecff"],
@@ -1578,6 +1624,23 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           if (n("ammo") < ammoTarget) need.push("ammo");
           if (n("tnt") < 3) need.push("tnt");
           if (need.length) spawnItem(s, need[(Math.random() * need.length) | 0]);
+        }
+
+        for (let i = s.hazards.length - 1; i >= 0; i--) {
+          const hz = s.hazards[i];
+          hz.t += dt;
+          if (hz.t < hz.life) continue;
+          const half = L.cell * CALAMITY_HALF;
+          for (const p of s.players) {
+            if (p.id === hz.ownerId) continue;
+            if (Math.abs(p.x - hz.x) < half && Math.abs(p.y - hz.y) < half) {
+              damage(s, p, CALAMITY_DMG);
+            }
+          }
+          s.booms.push({ x: hz.x, y: hz.y, t: 0, col: C.tnt });
+          spawnPoof(s, hz.x, hz.y, [C.tnt, "#ffd7b0", "#fff2a8"], { count: 18, speed: [50, 190], life: [0.25, 0.45], size: [3, 6] });
+          s.shake = Math.max(s.shake, 16 * L.s);
+          s.hazards.splice(i, 1);
         }
       }
 
@@ -1727,6 +1790,25 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     ctx.rect(AR.x, AR.y, AR.w, AR.h);
     ctx.clip();
 
+    for (const hz of s.hazards) {
+      const half = L.cell * CALAMITY_HALF;
+      const prog = clamp(hz.t / hz.life, 0, 1);
+      const blinkRate = 2.5 + prog * 9; // 発動が近づくほど速く点滅
+      const blink = Math.floor(hz.t * blinkRate) % 2 === 0;
+      const col = hz.ownerId === 0 ? C.p1 : C.p2;
+      ctx.save();
+      ctx.globalAlpha = 0.16 + prog * 0.24;
+      ctx.fillStyle = blink ? "#ff5a4e" : col;
+      ctx.fillRect(hz.x - half, hz.y - half, half * 2, half * 2);
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = blink ? "#ffdcd2" : col;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 6]);
+      ctx.strokeRect(hz.x - half, hz.y - half, half * 2, half * 2);
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
     for (const it of s.items) {
       const pop = spawnScale(s, it.born ?? 0);
       if (it.type === "tnt") {
@@ -1770,10 +1852,25 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       const l = Math.hypot(input.aim.dx, input.aim.dy);
       if (l > 0.25) drawAim(ctx, p1.x, p1.y, input.aim.dx / l, input.aim.dy / l, p1.color);
     }
-    if ((perk === "snow" || perk === "tp") && weaponDrag.current.id !== null) {
+    if ((perk === "snow" || perk === "tp" || perk === "calamity") && weaponDrag.current.id !== null) {
       const wd = weaponDrag.current;
       const l = Math.hypot(wd.dx, wd.dy);
-      if (l > 0.15) {
+      if (perk === "calamity") {
+        if (l > 0.15) {
+          const t = calamityTarget(p1, wd.dx, wd.dy); // 実際の発動と同じく、正規化しない生の距離を使う
+          const half = L.cell * CALAMITY_HALF;
+          ctx.save();
+          ctx.globalAlpha = 0.28;
+          ctx.fillStyle = ACCENT;
+          ctx.fillRect(t.x - half, t.y - half, half * 2, half * 2);
+          ctx.globalAlpha = 0.9;
+          ctx.strokeStyle = ACCENT;
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash([9, 7]);
+          ctx.strokeRect(t.x - half, t.y - half, half * 2, half * 2);
+          ctx.restore();
+        }
+      } else if (l > 0.15) {
         if (perk === "tp") drawStraightAim(ctx, p1.x, p1.y, wd.dx / l, wd.dy / l, ACCENT);
         else drawAim(ctx, p1.x, p1.y, wd.dx / l, wd.dy / l, ACCENT);
       }
@@ -2002,7 +2099,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     </div>
   );
 
-  const cdMax = perk === "snow" ? SNOW_CD : perk === "tp" ? TP_CD : 1;
+  const cdMax = perk === "snow" ? SNOW_CD : perk === "tp" ? TP_CD : perk === "calamity" ? CALAMITY_CD : 1;
   const cdFrac = clamp((ui.weaponCd1 || 0) / cdMax, 0, 1);
   const snowImmuneFrac = clamp((ui.snowImmune2 || 0) / SNOW_IMMUNE, 0, 1);
 
@@ -2038,7 +2135,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               ))}
             </div>
           )}
-          {(perk === "snow" || perk === "tp") && (
+          {(perk === "snow" || perk === "tp" || perk === "calamity") && (
             <div className="flex items-center gap-1.5">
               <div className="h-1.5 w-16 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.12)" }}>
                 <div className="h-full transition-all duration-150 ease-out"
@@ -2072,7 +2169,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         </div>
       </div>
 
-      {(perk === "snow" || perk === "tp") && (
+      {(perk === "snow" || perk === "tp" || perk === "calamity") && (
         <div
           ref={weaponBtnRef}
           role="button"
