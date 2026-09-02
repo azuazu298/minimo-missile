@@ -140,7 +140,7 @@ function connectPeer(ws, isHost, onReady) {
 /* ============================================================
    ホーム画面
    ============================================================ */
-function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn }) {
+function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn, onOpenBtnPosition }) {
   // idle | host-rules | hosting | room-list | joining | join-failed
   const [phase, setPhase] = useState("idle");
   const [rooms, setRooms] = useState([]);
@@ -411,6 +411,13 @@ function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn }) {
               />
             </button>
           </div>
+          <button
+            onClick={onOpenBtnPosition}
+            className="mt-2 w-full text-center text-xs underline decoration-dotted"
+            style={{ color: "#6b7178" }}
+          >
+            特殊ボタンの位置を設定
+          </button>
         </div>
       </div>
     </div>
@@ -422,13 +429,13 @@ function HomeScreen({ onStartBattle, onMatched, soundOn, setSoundOn }) {
    ============================================================ */
 const BASE_HP = 100;
 const BLESSING_HP = 120;
-const BLESSING_HEAL = 30;
+const BLESSING_HEAL = 40;
 const BLESSING_COMBO_NEEDED = 3;
 
 const SNOW_SPEED_MULT = 1.5;
 const SNOW_LIFE = 1.0;
-const SNOW_FREEZE = 2.5;
-const SNOW_CD = 1.0;
+const SNOW_FREEZE = 2.0;
+const SNOW_CD = 2.0;
 
 const TP_SPEED_MULT = 2.0;
 const TP_LIFE = 1.6;
@@ -448,11 +455,12 @@ const CALAMITY_DMG = 60;
 const CALAMITY_HALF = 1.5; // 3x3マス分の半幅（マス単位。実際のpxはL.cell*これ）
 
 const PERKS = [
-  { id: "blessing", name: "加護", desc: "体力120（通常の1.2倍）。ミサイルを3回連続で命中させると30回復する（外すと連続記録はリセット）。" },
-  { id: "snow", name: "雪像", desc: "特殊ボタンで発動（クールタイム1秒・弾速1.5倍）。命中させると相手を2.5秒間動けなくする。同じ相手には4秒間、再度は効かない。" },
-  { id: "tp", name: "テレポート", desc: "特殊ボタンで発動（クールタイム3秒・弾速2倍）。命中地点まで自分がワープする。ワープ後2秒以内にミサイルを命中させると通常の2倍のダメージを与えられる。" },
-  { id: "rocket", name: "怪力", desc: "タップ発射時のみ発動。2倍サイズ、2倍ダメージの弾が出る。障害物には3回当たるか2.5秒経つまで消えない（同じTNTには再ヒットしない）。" },
-  { id: "calamity", name: "厄災", desc: "特殊ボタン長押しで発動（クールタイム4秒・タップしても反応しない）。タイル3×3を指定して、3秒後その範囲に60ダメージ。本人はそのダメージを受けない。アイテムへの影響はない。" },
+  { id: "blessing", name: "カミサマノカゴ", desc: "体力120（通常の1.2倍）。ミサイルを3連続で命中させると40回復する。外すと連続記録はリセットされる。" },
+  { id: "snow", name: "サッポロユキマツリ", desc: "特殊ボタンで発動（クールタイム2秒・弾速1.5倍）。命中させた相手を2秒間動けなくする。同じ相手には命中後4秒間、再度は効かない。" },
+  { id: "tp", name: "ウシロノショウメン", desc: "特殊ボタンで発動（クールタイム3秒・弾速2倍）。命中地点まで自分がワープする。ワープ後2秒以内にミサイルを命中させると、通常の2倍のダメージを与えられる。" },
+  { id: "rocket", name: "トッテオキノワザ", desc: "タップ発射時のみ発動。2倍サイズ・2倍ダメージの弾を放つ。障害物には3回当たるか2.5秒経つまで消えない（同じTNTには再ヒットしない）。" },
+  { id: "calamity", name: "ヤクサイ", desc: "特殊ボタン長押しで発動（クールタイム4秒。タップには反応しない）。タイル3×3を指定し、3秒後にその範囲へ60ダメージ。本人は無傷で、アイテムへの影響もない。" },
+  { id: "berserk", name: "カジバノバカヂカラ", desc: "受けたダメージの割合ぶんだけ、足の速さと弾のダメージが上昇し続ける。ボロボロになるほど強くなる。" },
 ];
 
 const WEAPON_META = {
@@ -563,6 +571,102 @@ function OnlinePerkSelectScreen({ ws, onReady }) {
 /* ============================================================
    対戦画面
    ============================================================ */
+const WEAPON_BTN_POS_KEY = "minimo-missile:weaponBtnPos";
+const DEFAULT_BTN_POS = { xFrac: 0.88, yFrac: 0.85 };
+function loadWeaponBtnPos() {
+  try {
+    const raw = localStorage.getItem(WEAPON_BTN_POS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (typeof p.xFrac === "number" && typeof p.yFrac === "number") return p;
+    }
+  } catch {}
+  return { ...DEFAULT_BTN_POS };
+}
+function saveWeaponBtnPos(pos) {
+  try { localStorage.setItem(WEAPON_BTN_POS_KEY, JSON.stringify(pos)); } catch {}
+}
+
+/* ============================================================
+   特殊ボタンの位置設定画面
+   ============================================================ */
+function WeaponButtonPositionScreen({ onBack }) {
+  const [pos, setPos] = useState(loadWeaponBtnPos);
+  const areaRef = useRef(null);
+  const dragging = useRef(false);
+
+  const updateFromEvent = (e) => {
+    const area = areaRef.current;
+    if (!area) return;
+    const rect = area.getBoundingClientRect();
+    let xFrac = (e.clientX - rect.left) / rect.width;
+    let yFrac = (e.clientY - rect.top) / rect.height;
+    xFrac = clamp(xFrac, 0.08, 0.92);
+    yFrac = clamp(yFrac, 0.08, 0.92);
+    setPos({ xFrac, yFrac });
+  };
+
+  const onDown = (e) => { e.preventDefault(); dragging.current = true; updateFromEvent(e); e.target.setPointerCapture?.(e.pointerId); };
+  const onMove = (e) => { if (dragging.current) updateFromEvent(e); };
+  const onUp = () => { dragging.current = false; };
+
+  const save = () => { saveWeaponBtnPos(pos); onBack(); };
+  const reset = () => { setPos({ ...DEFAULT_BTN_POS }); saveWeaponBtnPos({ ...DEFAULT_BTN_POS }); };
+
+  return (
+    <div
+      className="fixed inset-0 flex flex-col items-center overflow-hidden px-5 py-6"
+      style={{ background: "#0b0d11", fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif" }}
+    >
+      <div className="w-full max-w-sm shrink-0 pt-4 text-center">
+        <h2 className="mb-2 text-xl font-bold" style={{ color: "#eef0f3" }}>特殊ボタンの位置</h2>
+        <p className="mb-4 text-xs" style={{ color: "#6b7178" }}>
+          ドラッグして、対戦中に押しやすい位置に動かしてください
+        </p>
+      </div>
+
+      <div
+        ref={areaRef}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onUp}
+        className="relative w-full max-w-sm flex-1 rounded-xl border"
+        style={{ borderColor: "rgba(255,255,255,.14)", background: "#14171d", touchAction: "none" }}
+      >
+        <div
+          className="absolute flex items-center justify-center rounded-full select-none"
+          style={{
+            left: `${pos.xFrac * 100}%`, top: `${pos.yFrac * 100}%`,
+            width: 64, height: 64, transform: "translate(-50%, -50%)",
+            background: "rgba(20,23,29,.92)", border: `2px solid ${ACCENT}`,
+            boxShadow: "0 0 14px rgba(95,212,224,.4)",
+          }}
+        >
+          <span style={{ fontSize: 22, color: "#eef0f3" }}>❄</span>
+        </div>
+      </div>
+
+      <div className="mt-4 flex w-full max-w-sm shrink-0 gap-2 pb-2">
+        <button
+          onClick={reset}
+          className="flex-1 rounded-lg border px-4 py-3 text-sm font-bold"
+          style={{ borderColor: "rgba(255,255,255,.2)", color: "#eef0f3", background: "#14171d" }}
+        >
+          初期位置に戻す
+        </button>
+        <button
+          onClick={save}
+          className="flex-1 rounded-lg px-4 py-3 text-sm font-bold"
+          style={{ background: ACCENT, color: "#0b0d11" }}
+        >
+          保存して戻る
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const C = {
   void: "#14161c",
   floor: "#262b33",
@@ -735,6 +839,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
   const weaponBtnRef = useRef(null);
   const weaponDrag = useRef({ id: null, ox: 0, oy: 0, dx: 0, dy: 0 });
   const [knob, setKnob] = useState({ dx: 0, dy: 0 });
+  const [weaponBtnPos] = useState(loadWeaponBtnPos);
   const [knobActive, setKnobActive] = useState(false);
 
   function weaponPointerDown(e) {
@@ -1126,13 +1231,20 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
   }
 
   // ホスト・ゲスト共通で使う「入力1回分ぶんの移動」。同じ入力なら必ず同じ結果になる（予測の再現性のため）
+  // カジバノバカヂカラ：失った体力の割合ぶんだけ速度・ダメージが上がる
+  function berserkMult(p) {
+    if (p.perk !== "berserk") return 1;
+    return 1 + clamp((p.maxHp - p.hp) / p.maxHp, 0, 1);
+  }
+
   function stepPlayerMove(p, mx, my, dt) {
     const ml = Math.hypot(mx, my);
     let nmx = mx, nmy = my;
     if (ml > 1) { nmx /= ml; nmy /= ml; }
     if (p.frozen <= 0) {
-      p.x += nmx * L.SPEED * dt;
-      p.y += nmy * L.SPEED * dt;
+      const spd = L.SPEED * berserkMult(p);
+      p.x += nmx * spd * dt;
+      p.y += nmy * spd * dt;
       p.x = clamp(p.x, L.AR.x + L.PR, L.AR.x + L.AR.w - L.PR);
       p.y = clamp(p.y, L.AR.y + L.PR, L.AR.y + L.AR.h - L.PR);
     }
@@ -1470,8 +1582,8 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         if (keys["d"] || keys["arrowright"]) mx += 1;
         const ml = Math.hypot(mx, my);
         if (ml > 1) { mx /= ml; my /= ml; }
-        p1.vx = mx * L.SPEED;
-        p1.vy = my * L.SPEED;
+        p1.vx = mx * L.SPEED * berserkMult(p1);
+        p1.vy = my * L.SPEED * berserkMult(p1);
 
         const al = Math.hypot(input.aim.dx, input.aim.dy);
         if (al > 0.2) p1.face = Math.atan2(input.aim.dy, input.aim.dx);
@@ -1646,6 +1758,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
                     dmg = TP_BONUS_DMG;
                     owner.tpBonusT = 0;
                   }
+                  dmg = Math.round(dmg * berserkMult(owner));
                   damage(s, p, dmg);
                   p.ammo = 0;
                   const l = Math.hypot(b.vx, b.vy) || 1;
@@ -2254,7 +2367,8 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           onPointerCancel={weaponPointerUp}
           className="absolute flex select-none items-center justify-center rounded-full"
           style={{
-            right: 22, bottom: 22, width: 74, height: 74,
+            left: `${weaponBtnPos.xFrac * 100}%`, top: `${weaponBtnPos.yFrac * 100}%`,
+            transform: "translate(-50%, -50%)", width: 74, height: 74,
             background: "rgba(20,23,29,.85)",
             border: "2px solid rgba(255,255,255,.25)",
             touchAction: "none",
@@ -2400,7 +2514,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
    アプリ本体（画面遷移）
    ============================================================ */
 export default function App() {
-  const [screen, setScreen] = useState("home"); // home | perks | online-perks | battle
+  const [screen, setScreen] = useState("home"); // home | perks | online-perks | battle | btn-position
   const [matchId, setMatchId] = useState(0);
   const [perk, setPerk] = useState(null); // Bot対戦 or オンラインでの自分の選択
   const [peerPerk, setPeerPerk] = useState(null); // オンラインでの相手の選択
@@ -2489,9 +2603,10 @@ export default function App() {
     setScreen("home");
   };
 
-  if (screen === "home") return <HomeScreen onStartBattle={goPerks} onMatched={onMatched} soundOn={soundOn} setSoundOn={setSoundOn} />;
+  if (screen === "home") return <HomeScreen onStartBattle={goPerks} onMatched={onMatched} soundOn={soundOn} setSoundOn={setSoundOn} onOpenBtnPosition={() => setScreen("btn-position")} />;
   if (screen === "perks") return <PerkSelectScreen onSelect={choosePerk} />;
   if (screen === "online-perks") return <OnlinePerkSelectScreen ws={netMatch.ws} onReady={onlinePerksReady} />;
+  if (screen === "btn-position") return <WeaponButtonPositionScreen onBack={() => setScreen("home")} />;
   return (
     <BattleScreen
       key={matchId}
