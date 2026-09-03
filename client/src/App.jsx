@@ -68,6 +68,8 @@ const sfx = {
   win: () => { if (soundEnabled) [660, 880, 1100].forEach((f, i) => setTimeout(() => beep(f, 0.18, "sine", 0.12), i * 90)); },
   lose: () => { if (soundEnabled) [440, 330, 220].forEach((f, i) => setTimeout(() => beep(f, 0.22, "sawtooth", 0.09), i * 110)); },
   mark: () => { if (soundEnabled) beep(320, 0.14, "triangle", 0.1, 200); }, // 厄災の設置
+  envoySummon: () => { if (soundEnabled) beep(700, 0.1, "triangle", 0.08, 1100); }, // 分身の派遣
+  envoyFire: () => { if (soundEnabled) beep(760, 0.07, "square", 0.06, 380); }, // 分身の発射
   click: () => { if (soundEnabled) beep(500, 0.04, "square", 0.05); },
 };
 
@@ -454,6 +456,12 @@ const CALAMITY_DELAY = 3.0; // 指定してから発動までの時間
 const CALAMITY_DMG = 60;
 const CALAMITY_HALF = 1.5; // 3x3マス分の半幅（マス単位。実際のpxはL.cell*これ）
 
+const ENVOY_CD = 3.0;
+const ENVOY_HP_COST = 10;
+const ENVOY_HP = 10;
+const ENVOY_DESPAWN = 0.5; // 発射してから消えるまで
+const ENVOY_MAX_LIFE = 10.0; // 迷子防止の安全装置
+
 const PERKS = [
   { id: "blessing", name: "カミサマノカゴ", desc: "体力120（通常の1.2倍）。ミサイルを3連続で命中させると40回復する。外すと連続記録はリセットされる。" },
   { id: "snow", name: "サッポロユキマツリ", desc: "特殊ボタンで発動（クールタイム2秒・弾速1.5倍）。命中させた相手を2秒間動けなくする。同じ相手には命中後4秒間、再度は効かない。" },
@@ -461,12 +469,14 @@ const PERKS = [
   { id: "rocket", name: "トッテオキノワザ", desc: "タップ発射時のみ発動。2倍サイズ・2倍ダメージの弾を放つ。障害物には3回当たるか2.5秒経つまで消えない（同じTNTには再ヒットしない）。" },
   { id: "calamity", name: "ヤクサイ", desc: "特殊ボタン長押しで発動（クールタイム4秒。タップには反応しない）。タイル3×3を指定し、3秒後にその範囲へ60ダメージ。本人は無傷で、アイテムへの影響もない。" },
   { id: "berserk", name: "カジバノバカヂカラ", desc: "受けたダメージの割合ぶんだけ、足の速さと弾のダメージが上昇し続ける。ボロボロになるほど強くなる。" },
+  { id: "envoy", name: "ハジメテノオツカイ", desc: "特殊ボタンをタップした瞬間に発動（クールタイム3秒。狙いは不要）。体力を10消費し、自分そっくりの分身（体力10）を最寄りのミサイルへ向かわせる。分身はミサイルを取った瞬間に相手へ発射し、0.5秒後に消える。道中で撃たれるとその場で消える。" },
 ];
 
 const WEAPON_META = {
   snow: { icon: "❄", cdMax: SNOW_CD },
   tp: { icon: "⇝", cdMax: TP_CD },
   calamity: { icon: "☄", cdMax: CALAMITY_CD },
+  envoy: { icon: "🏃", cdMax: ENVOY_CD },
 };
 
 /* ============================================================
@@ -706,7 +716,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
   };
   const netInput = useRef({ moveDx: 0, moveDy: 0, aimDx: 0, aimDy: 0, aimActive: false });
   const netInputQueue = useRef([]); // ホスト用：ゲストから届いた入力を順番に積むキュー
-  const audioPrev = useRef({ hp1: -1, hp2: -1, ammo1: 0, ammo2: 0, boomCount: 0, winner: undefined });
+  const audioPrev = useRef({ hp1: -1, hp2: -1, ammo1: 0, ammo2: 0, boomCount: 0, winner: undefined, envoyFiredCount: 0 });
   const lastAckSeq = useRef(0); // ホスト用：どこまで処理したか
   const inputSeq = useRef(0); // ゲスト用：自分の入力の通し番号
   const pendingInputs = useRef([]); // ゲスト用：まだホストに確認されていない入力の履歴
@@ -880,10 +890,11 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     if (p1.frozen > 0) return;
 
     const isCalamity = p1.perk === "calamity";
-    const dir = moved && Math.hypot(dx, dy) > 0.2
-      ? { dx, dy }
-      : (!moved && !isCalamity) // 厄災はタップ（狙わない発動）を受け付けない
-        ? { dx: Math.cos(p1.face), dy: Math.sin(p1.face) }
+    const isEnvoy = p1.perk === "envoy";
+    const dir = (!moved && !isCalamity) // 厄災はタップ（狙わない発動）を受け付けない
+      ? { dx: Math.cos(p1.face), dy: Math.sin(p1.face) }
+      : (moved && !isEnvoy && Math.hypot(dx, dy) > 0.2) // ハジメテノオツカイは狙い不要＝ドラッグを受け付けない
+        ? { dx, dy }
         : null;
     if (!dir) return;
     if (p1.weaponCd > 0) return; // クールタイム中は何も起きない（音も鳴らさない）
@@ -891,11 +902,14 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     if (p1.perk === "snow") sfx.snowFire();
     else if (p1.perk === "tp") sfx.tpFire();
     else if (isCalamity) sfx.mark();
+    else if (isEnvoy) sfx.envoySummon();
 
     if (online && !isHost) {
       sendMsg({ type: "weaponfire", dx: dir.dx, dy: dir.dy });
     } else if (isCalamity) {
       fireCalamity(s, p1, dir.dx, dir.dy);
+    } else if (isEnvoy) {
+      fireEnvoy(s, p1);
     } else {
       fireWeapon(s, p1, dir.dx, dir.dy);
     }
@@ -957,7 +971,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           hp: p1Max, maxHp: p1Max, ammo: 0, color: C.p2, bot: true, flash: 0, face: (Math.PI * 3) / 4,
           think: 0, wander: { x: 0, y: 0 }, aimHold: 0, perk: guestPerk || null, combo: 0, weaponCd: 0, frozen: 0, tpBonusT: 0, snowImmuneT: 0 },
       ],
-      bullets: [], items: [], booms: [], shards: [], poofs: [], dmgPopups: [], hazards: [],
+      bullets: [], items: [], booms: [], shards: [], poofs: [], dmgPopups: [], hazards: [], clones: [],
       spawnT: 0, over: null, shake: 0, t: 0,
     };
     for (let i = 0; i < 3; i++) spawnItem(s, "tnt");
@@ -1036,6 +1050,9 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         p.ky += Math.sin(a) * 420 * L.s * f;
       }
     }
+    for (const cl of s.clones) {
+      if (dist(cl.x, cl.y, x, y) < L.EXPR) cl.hp = 0;
+    }
     const chain = [];
     s.items = s.items.filter((it) => {
       if (dist(it.x, it.y, x, y) > L.EXPR) return true;
@@ -1105,6 +1122,24 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     s.hazards.push({ x: t.x, y: t.y, t: 0, life: CALAMITY_DELAY, ownerId: p.id });
   }
 
+  // ハジメテノオツカイ：最寄りのミサイルへ分身を送り出す
+  function fireEnvoy(s, p) {
+    if (p.perk !== "envoy") return;
+    if (p.weaponCd > 0) return;
+    if (p.hp <= ENVOY_HP_COST) return; // 自滅するほど体力が低ければ発動しない
+    let best = null, bd = Infinity;
+    for (const it of s.items) {
+      if (it.type !== "ammo") continue;
+      const d = dist(p.x, p.y, it.x, it.y);
+      if (d < bd) { bd = d; best = it; }
+    }
+    if (!best) return; // 送り先のミサイルがなければ発動しない
+    p.weaponCd = ENVOY_CD;
+    p.hp = clamp(p.hp - ENVOY_HP_COST, 0, p.maxHp);
+    spawnDmgPopup(s, p.x, p.y, `-${ENVOY_HP_COST}`, "#ff6a5c");
+    s.clones.push({ ownerId: p.id, x: p.x, y: p.y, hp: ENVOY_HP, maxHp: ENVOY_HP, fired: false, dyingT: -1, life: 0 });
+  }
+
   /* ---------- オンライン対戦用の通信ヘルパー ---------- */
   function normPos(x, y) {
     return { nx: (x - L.AR.x) / L.AR.w, ny: (y - L.AR.y) / L.AR.h };
@@ -1135,6 +1170,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       })),
       poofs: s.poofs.map((f) => ({ ...toN(f.x, f.y), t: f.t, life: f.life, size: f.size / (L.AR.w || 1), c: f.c })),
       hazards: s.hazards.map((h) => ({ ...toN(h.x, h.y), t: h.t, life: h.life, ownerId: h.ownerId })),
+      clones: s.clones.map((cl) => ({ ...toN(cl.x, cl.y), ownerId: cl.ownerId, fired: cl.fired })),
     };
   }
 
@@ -1225,6 +1261,11 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     s.hazards = (payload.hazards || []).map((h) => {
       const pos = denormPos(h.nx, h.ny);
       return { x: pos.x, y: pos.y, t: h.t, life: h.life, ownerId: h.ownerId === 0 ? 1 : 0 };
+    });
+
+    s.clones = (payload.clones || []).map((cl) => {
+      const pos = denormPos(cl.nx, cl.ny);
+      return { x: pos.x, y: pos.y, ownerId: cl.ownerId === 0 ? 1 : 0, fired: cl.fired, hp: 10, maxHp: 10 };
     });
 
     s.shards = [];
@@ -1426,6 +1467,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         s.players.forEach(remap);
         s.items.forEach(remap);
         s.hazards.forEach(remap);
+        s.clones.forEach(remap);
         s.bullets.forEach((b) => { remap(b); b.vx *= k; b.vy *= k; b.trail = []; });
       }
     });
@@ -1448,6 +1490,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         else if (msg.type === "fire") { fire(s, p2, msg.dx, msg.dy, { viaTap: msg.viaTap }); }
         else if (msg.type === "weaponfire") {
           if (p2.perk === "calamity") fireCalamity(s, p2, msg.dx, msg.dy);
+          else if (p2.perk === "envoy") fireEnvoy(s, p2);
           else fireWeapon(s, p2, msg.dx, msg.dy);
         }
       } else {
@@ -1774,6 +1817,17 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
                 break;
               }
             }
+
+            if (!dead) {
+              for (const cl of s.clones) {
+                if (b.kind === "snow") continue; // 雪像は分身には効かない（凍結対象ではないため）
+                if (dist(b.x, b.y, cl.x, cl.y) < L.PR * 0.82 + L.BR) {
+                  cl.hp = 0; // 分身はHPが低いのでほぼ一撃で消える
+                  dead = true;
+                  break;
+                }
+              }
+            }
           }
           if (dead) s.bullets.splice(i, 1);
         }
@@ -1800,10 +1854,60 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               damage(s, p, CALAMITY_DMG);
             }
           }
+          for (const cl of s.clones) {
+            if (cl.ownerId === hz.ownerId) continue;
+            if (Math.abs(cl.x - hz.x) < half && Math.abs(cl.y - hz.y) < half) cl.hp = 0;
+          }
           s.booms.push({ x: hz.x, y: hz.y, t: 0, col: C.tnt, kind: "calamity" });
           spawnPoof(s, hz.x, hz.y, [C.tnt, "#ffd7b0", "#fff2a8"], { count: 18, speed: [50, 190], life: [0.25, 0.45], size: [3, 6] });
           s.shake = Math.max(s.shake, 16 * L.s);
           s.hazards.splice(i, 1);
+        }
+
+        for (let i = s.clones.length - 1; i >= 0; i--) {
+          const cl = s.clones[i];
+          if (cl.hp <= 0) {
+            spawnPoof(s, cl.x, cl.y, [cl.ownerId === 0 ? C.p1 : C.p2, "#ffffff"], { count: 10, speed: [40, 130], life: [0.18, 0.32], size: [2, 4] });
+            s.clones.splice(i, 1);
+            continue;
+          }
+          cl.life += dt;
+          if (cl.fired) {
+            cl.dyingT += dt;
+            if (cl.dyingT >= ENVOY_DESPAWN) s.clones.splice(i, 1);
+            continue;
+          }
+          if (cl.life > ENVOY_MAX_LIFE) { s.clones.splice(i, 1); continue; }
+
+          let target = null, tbd = Infinity;
+          for (const it of s.items) {
+            if (it.type !== "ammo") continue;
+            const d = dist(cl.x, cl.y, it.x, it.y);
+            if (d < tbd) { tbd = d; target = it; }
+          }
+          if (!target) { s.clones.splice(i, 1); continue; } // 行き先がなくなったら消える
+
+          const reach = L.PR + 20 * L.s;
+          if (tbd < reach) {
+            const idx = s.items.indexOf(target);
+            if (idx !== -1) s.items.splice(idx, 1);
+            const foe = s.players[cl.ownerId === 0 ? 1 : 0];
+            const ang = Math.atan2(foe.y - cl.y, foe.x - cl.x);
+            s.bullets.push({
+              x: cl.x + Math.cos(ang) * (L.PR + L.BR + 2),
+              y: cl.y + Math.sin(ang) * (L.PR + L.BR + 2),
+              vx: Math.cos(ang) * L.BSPEED,
+              vy: Math.sin(ang) * L.BSPEED,
+              t: 0, owner: cl.ownerId, trail: [], kind: "normal", obstacleHits: 0,
+            });
+            cl.fired = true;
+            cl.dyingT = 0;
+          } else {
+            const dx2 = target.x - cl.x, dy2 = target.y - cl.y;
+            const l2 = Math.hypot(dx2, dy2) || 1;
+            cl.x += (dx2 / l2) * L.SPEED * dt;
+            cl.y += (dy2 / l2) * L.SPEED * dt;
+          }
         }
       }
 
@@ -1905,9 +2009,12 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           }
         }
         if (prevA.winner === null && s.over !== null) { if (s.over === 0) sfx.win(); else sfx.lose(); }
+        const envoyFiredCount = s.clones.filter((cl) => cl.fired).length;
+        if (envoyFiredCount > prevA.envoyFiredCount) sfx.envoyFire();
         prevA.hp1 = p1a.hp; prevA.hp2 = p2a.hp;
         prevA.ammo1 = p1a.ammo; prevA.ammo2 = p2a.ammo;
         prevA.boomCount = s.booms.length; prevA.winner = s.over;
+        prevA.envoyFiredCount = envoyFiredCount;
       }
 
       draw(ctx, s, input);
@@ -2107,6 +2214,21 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
 
     for (const p of s.players) drawPlayer(ctx, p, s);
 
+    for (const cl of s.clones) {
+      ctx.save();
+      ctx.globalAlpha = 0.82;
+      ctx.fillStyle = cl.ownerId === 0 ? C.p1 : C.p2;
+      ctx.beginPath();
+      ctx.arc(cl.x, cl.y, L.PR * 0.8, 0, 7);
+      ctx.fill();
+      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = C.ink;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
     for (const b of s.booms) {
       const k = b.t / 0.45;
       ctx.save();
@@ -2286,7 +2408,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     </div>
   );
 
-  const cdMax = perk === "snow" ? SNOW_CD : perk === "tp" ? TP_CD : perk === "calamity" ? CALAMITY_CD : 1;
+  const cdMax = perk === "snow" ? SNOW_CD : perk === "tp" ? TP_CD : perk === "calamity" ? CALAMITY_CD : perk === "envoy" ? ENVOY_CD : 1;
   const cdFrac = clamp((ui.weaponCd1 || 0) / cdMax, 0, 1);
   const snowImmuneFrac = clamp((ui.snowImmune2 || 0) / SNOW_IMMUNE, 0, 1);
 
@@ -2322,7 +2444,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               ))}
             </div>
           )}
-          {(perk === "snow" || perk === "tp" || perk === "calamity") && (
+          {(perk === "snow" || perk === "tp" || perk === "calamity" || perk === "envoy") && (
             <div className="flex items-center gap-1.5">
               <div className="h-1.5 w-16 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.12)" }}>
                 <div className="h-full transition-all duration-150 ease-out"
@@ -2356,7 +2478,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         </div>
       </div>
 
-      {(perk === "snow" || perk === "tp" || perk === "calamity") && (
+      {(perk === "snow" || perk === "tp" || perk === "calamity" || perk === "envoy") && (
         <div
           ref={weaponBtnRef}
           role="button"
