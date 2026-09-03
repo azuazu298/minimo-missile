@@ -456,11 +456,10 @@ const CALAMITY_DELAY = 3.0; // 指定してから発動までの時間
 const CALAMITY_DMG = 60;
 const CALAMITY_HALF = 1.5; // 3x3マス分の半幅（マス単位。実際のpxはL.cell*これ）
 
-const ENVOY_CD = 3.0;
+const ENVOY_CD = 8.0;
 const ENVOY_HP_COST = 10;
 const ENVOY_HP = 10;
 const ENVOY_DESPAWN = 0.5; // 発射してから消えるまで
-const ENVOY_MAX_LIFE = 10.0; // 迷子防止の安全装置
 
 const PERKS = [
   { id: "blessing", name: "カミサマノカゴ", desc: "体力120（通常の1.2倍）。ミサイルを3連続で命中させると40回復する。外すと連続記録はリセットされる。" },
@@ -469,7 +468,7 @@ const PERKS = [
   { id: "rocket", name: "トッテオキノワザ", desc: "タップ発射時のみ発動。2倍サイズ・2倍ダメージの弾を放つ。障害物には3回当たるか2.5秒経つまで消えない（同じTNTには再ヒットしない）。" },
   { id: "calamity", name: "ヤクサイ", desc: "特殊ボタン長押しで発動（クールタイム4秒。タップには反応しない）。タイル3×3を指定し、3秒後にその範囲へ60ダメージ。本人は無傷で、アイテムへの影響もない。" },
   { id: "berserk", name: "カジバノバカヂカラ", desc: "受けたダメージの割合ぶんだけ、足の速さと弾のダメージが上昇し続ける。ボロボロになるほど強くなる。" },
-  { id: "envoy", name: "ハジメテノオツカイ", desc: "特殊ボタンをタップした瞬間に発動（クールタイム3秒。狙いは不要）。体力を10消費し、自分そっくりの分身（体力10）を最寄りのミサイルへ向かわせる。分身はミサイルを取った瞬間に相手へ発射し、0.5秒後に消える。道中で撃たれるとその場で消える。" },
+  { id: "envoy", name: "ハジメテノオツカイ", desc: "特殊ボタンをタップした瞬間に発動（クールタイム8秒。狙いは不要）。体力を10消費し、自分そっくりの分身（体力10）を最寄りのミサイルへ向かわせる。分身はミサイルを取った瞬間に相手へ発射し、0.5秒後に消える。道中で撃たれるとその場で消える。" },
 ];
 
 const WEAPON_META = {
@@ -1137,7 +1136,11 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     p.weaponCd = ENVOY_CD;
     p.hp = clamp(p.hp - ENVOY_HP_COST, 0, p.maxHp);
     spawnDmgPopup(s, p.x, p.y, `-${ENVOY_HP_COST}`, "#ff6a5c");
-    s.clones.push({ ownerId: p.id, x: p.x, y: p.y, hp: ENVOY_HP, maxHp: ENVOY_HP, fired: false, dyingT: -1, life: 0 });
+    s.clones.push({
+      ownerId: p.id, id: p.id, x: p.x, y: p.y, hp: ENVOY_HP, maxHp: ENVOY_HP,
+      fired: false, dyingT: -1, life: 0,
+      face: p.face, color: p.color, flash: 0, frozen: 0, ammo: 0,
+    });
   }
 
   /* ---------- オンライン対戦用の通信ヘルパー ---------- */
@@ -1170,7 +1173,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       })),
       poofs: s.poofs.map((f) => ({ ...toN(f.x, f.y), t: f.t, life: f.life, size: f.size / (L.AR.w || 1), c: f.c })),
       hazards: s.hazards.map((h) => ({ ...toN(h.x, h.y), t: h.t, life: h.life, ownerId: h.ownerId })),
-      clones: s.clones.map((cl) => ({ ...toN(cl.x, cl.y), ownerId: cl.ownerId, fired: cl.fired })),
+      clones: s.clones.map((cl) => ({ ...toN(cl.x, cl.y), ownerId: cl.ownerId, fired: cl.fired, face: cl.face })),
     };
   }
 
@@ -1265,7 +1268,11 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
 
     s.clones = (payload.clones || []).map((cl) => {
       const pos = denormPos(cl.nx, cl.ny);
-      return { x: pos.x, y: pos.y, ownerId: cl.ownerId === 0 ? 1 : 0, fired: cl.fired, hp: 10, maxHp: 10 };
+      const ownerId = cl.ownerId === 0 ? 1 : 0;
+      return {
+        x: pos.x, y: pos.y, ownerId, id: ownerId, fired: cl.fired, hp: 10, maxHp: 10,
+        face: cl.face, color: ownerId === 0 ? C.p1 : C.p2, flash: 0, frozen: 0, ammo: 0,
+      };
     });
 
     s.shards = [];
@@ -1877,7 +1884,6 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
             if (cl.dyingT >= ENVOY_DESPAWN) s.clones.splice(i, 1);
             continue;
           }
-          if (cl.life > ENVOY_MAX_LIFE) { s.clones.splice(i, 1); continue; }
 
           let target = null, tbd = Infinity;
           for (const it of s.items) {
@@ -1885,7 +1891,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
             const d = dist(cl.x, cl.y, it.x, it.y);
             if (d < tbd) { tbd = d; target = it; }
           }
-          if (!target) { s.clones.splice(i, 1); continue; } // 行き先がなくなったら消える
+          if (!target) continue; // 行き先が見つからない間は、その場で待機する
 
           const reach = L.PR + 20 * L.s;
           if (tbd < reach) {
@@ -1893,6 +1899,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
             if (idx !== -1) s.items.splice(idx, 1);
             const foe = s.players[cl.ownerId === 0 ? 1 : 0];
             const ang = Math.atan2(foe.y - cl.y, foe.x - cl.x);
+            cl.face = ang;
             s.bullets.push({
               x: cl.x + Math.cos(ang) * (L.PR + L.BR + 2),
               y: cl.y + Math.sin(ang) * (L.PR + L.BR + 2),
@@ -1905,6 +1912,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           } else {
             const dx2 = target.x - cl.x, dy2 = target.y - cl.y;
             const l2 = Math.hypot(dx2, dy2) || 1;
+            cl.face = Math.atan2(dy2, dx2);
             cl.x += (dx2 / l2) * L.SPEED * dt;
             cl.y += (dy2 / l2) * L.SPEED * dt;
           }
@@ -2214,20 +2222,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
 
     for (const p of s.players) drawPlayer(ctx, p, s);
 
-    for (const cl of s.clones) {
-      ctx.save();
-      ctx.globalAlpha = 0.82;
-      ctx.fillStyle = cl.ownerId === 0 ? C.p1 : C.p2;
-      ctx.beginPath();
-      ctx.arc(cl.x, cl.y, L.PR * 0.8, 0, 7);
-      ctx.fill();
-      ctx.lineWidth = 2.2;
-      ctx.strokeStyle = C.ink;
-      ctx.setLineDash([4, 3]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
-    }
+    for (const cl of s.clones) drawPlayer(ctx, cl, s);
 
     for (const b of s.booms) {
       const k = b.t / 0.45;
