@@ -1126,13 +1126,6 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     if (p.perk !== "envoy") return;
     if (p.weaponCd > 0) return;
     if (p.hp <= ENVOY_HP_COST) return; // 自滅するほど体力が低ければ発動しない
-    let best = null, bd = Infinity;
-    for (const it of s.items) {
-      if (it.type !== "ammo") continue;
-      const d = dist(p.x, p.y, it.x, it.y);
-      if (d < bd) { bd = d; best = it; }
-    }
-    if (!best) return; // 送り先のミサイルがなければ発動しない
     p.weaponCd = ENVOY_CD;
     p.hp = clamp(p.hp - ENVOY_HP_COST, 0, p.maxHp);
     spawnDmgPopup(s, p.x, p.y, `-${ENVOY_HP_COST}`, "#ff6a5c");
