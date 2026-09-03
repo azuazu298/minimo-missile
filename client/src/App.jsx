@@ -458,7 +458,7 @@ const CALAMITY_HALF = 1.5; // 3x3マス分の半幅（マス単位。実際のpx
 
 const ENVOY_CD = 8.0;
 const ENVOY_HP_COST = 16;
-const ENVOY_HP = 10;
+const ENVOY_HP = 16;
 const ENVOY_DESPAWN = 0.5; // 発射してから消えるまで
 
 const PERKS = [
@@ -581,13 +581,15 @@ function OnlinePerkSelectScreen({ ws, onReady }) {
    対戦画面
    ============================================================ */
 const WEAPON_BTN_POS_KEY = "minimo-missile:weaponBtnPos";
-const DEFAULT_BTN_POS = { xFrac: 0.88, yFrac: 0.85 };
+const DEFAULT_BTN_POS = { xFrac: 0.88, yFrac: 0.85, size: 74 };
 function loadWeaponBtnPos() {
   try {
     const raw = localStorage.getItem(WEAPON_BTN_POS_KEY);
     if (raw) {
       const p = JSON.parse(raw);
-      if (typeof p.xFrac === "number" && typeof p.yFrac === "number") return p;
+      if (typeof p.xFrac === "number" && typeof p.yFrac === "number") {
+        return { size: DEFAULT_BTN_POS.size, ...p };
+      }
     }
   } catch {}
   return { ...DEFAULT_BTN_POS };
@@ -612,7 +614,7 @@ function WeaponButtonPositionScreen({ onBack }) {
     let yFrac = (e.clientY - rect.top) / rect.height;
     xFrac = clamp(xFrac, 0.08, 0.92);
     yFrac = clamp(yFrac, 0.08, 0.92);
-    setPos({ xFrac, yFrac });
+    setPos((prev) => ({ ...prev, xFrac, yFrac }));
   };
 
   const onDown = (e) => { e.preventDefault(); dragging.current = true; updateFromEvent(e); e.target.setPointerCapture?.(e.pointerId); };
@@ -628,9 +630,9 @@ function WeaponButtonPositionScreen({ onBack }) {
       style={{ background: "#0b0d11", fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif" }}
     >
       <div className="w-full max-w-sm shrink-0 pt-4 text-center">
-        <h2 className="mb-2 text-xl font-bold" style={{ color: "#eef0f3" }}>特殊ボタンの位置</h2>
+        <h2 className="mb-2 text-xl font-bold" style={{ color: "#eef0f3" }}>特殊ボタンの位置・大きさ</h2>
         <p className="mb-4 text-xs" style={{ color: "#6b7178" }}>
-          ドラッグして、対戦中に押しやすい位置に動かしてください
+          ドラッグして位置を、下のスライダーで大きさを調整してください
         </p>
       </div>
 
@@ -647,13 +649,29 @@ function WeaponButtonPositionScreen({ onBack }) {
           className="absolute flex items-center justify-center rounded-full select-none"
           style={{
             left: `${pos.xFrac * 100}%`, top: `${pos.yFrac * 100}%`,
-            width: 64, height: 64, transform: "translate(-50%, -50%)",
+            width: pos.size, height: pos.size, transform: "translate(-50%, -50%)",
             background: "rgba(20,23,29,.92)", border: `2px solid ${ACCENT}`,
             boxShadow: "0 0 14px rgba(95,212,224,.4)",
           }}
         >
-          <span style={{ fontSize: 22, color: "#eef0f3" }}>❄</span>
+          <span style={{ fontSize: pos.size * 0.3, color: "#eef0f3" }}>❄</span>
         </div>
+      </div>
+
+      <div className="mt-4 w-full max-w-sm shrink-0">
+        <div className="mb-1 flex items-center justify-between text-xs" style={{ color: "#82878e" }}>
+          <span>大きさ</span>
+          <span>{pos.size}px</span>
+        </div>
+        <input
+          type="range"
+          min={50}
+          max={110}
+          value={pos.size}
+          onChange={(e) => setPos((prev) => ({ ...prev, size: Number(e.target.value) }))}
+          className="w-full"
+          style={{ accentColor: ACCENT }}
+        />
       </div>
 
       <div className="mt-4 flex w-full max-w-sm shrink-0 gap-2 pb-2">
@@ -662,7 +680,7 @@ function WeaponButtonPositionScreen({ onBack }) {
           className="flex-1 rounded-lg border px-4 py-3 text-sm font-bold"
           style={{ borderColor: "rgba(255,255,255,.2)", color: "#eef0f3", background: "#14171d" }}
         >
-          初期位置に戻す
+          初期状態に戻す
         </button>
         <button
           onClick={save}
@@ -715,7 +733,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
   };
   const netInput = useRef({ moveDx: 0, moveDy: 0, aimDx: 0, aimDy: 0, aimActive: false });
   const netInputQueue = useRef([]); // ホスト用：ゲストから届いた入力を順番に積むキュー
-  const audioPrev = useRef({ hp1: -1, hp2: -1, ammo1: 0, ammo2: 0, boomCount: 0, winner: undefined, envoyFiredCount: 0 });
+  const audioPrev = useRef({ hp1: -1, hp2: -1, ammo1: 0, ammo2: 0, boomCount: 0, blastCount: 0, winner: undefined, envoyFiredCount: 0 });
   const lastAckSeq = useRef(0); // ホスト用：どこまで処理したか
   const inputSeq = useRef(0); // ゲスト用：自分の入力の通し番号
   const pendingInputs = useRef([]); // ゲスト用：まだホストに確認されていない入力の履歴
@@ -867,7 +885,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     const dx = e.clientX - w.ox, dy = e.clientY - w.oy;
     const rawLen = Math.hypot(dx, dy);
     if (rawLen > 12) w.moved = true;
-    const m = 46;
+    const m = weaponBtnPos.size * 0.62;
     const l = rawLen || 1;
     const cl = Math.min(rawLen, m);
     const ndx = (dx / l) * (cl / m), ndy = (dy / l) * (cl / m);
@@ -971,6 +989,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           think: 0, wander: { x: 0, y: 0 }, aimHold: 0, perk: guestPerk || null, combo: 0, weaponCd: 0, frozen: 0, tpBonusT: 0, snowImmuneT: 0 },
       ],
       bullets: [], items: [], booms: [], shards: [], poofs: [], dmgPopups: [], hazards: [], clones: [],
+      warps: [], blastSquares: [],
       spawnT: 0, over: null, shake: 0, t: 0,
     };
     for (let i = 0; i < 3; i++) spawnItem(s, "tnt");
@@ -1006,7 +1025,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     p.hp = clamp(p.hp - amt, 0, p.maxHp);
     p.flash = 0.25;
     p.frozen = 0; // 被弾したら凍結が即解除される
-    spawnDmgPopup(s, p.x, p.y, `-${Math.round(amt)}`, "#ff6a5c");
+    spawnDmgPopup(s, p.x, p.y, `-${Math.round(amt)}`, p.id === 0 ? C.p1 : C.p2);
     if (p.hp <= 0) s.over = p.id === 0 ? 1 : 0;
   }
 
@@ -1167,6 +1186,8 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       poofs: s.poofs.map((f) => ({ ...toN(f.x, f.y), t: f.t, life: f.life, size: f.size / (L.AR.w || 1), c: f.c })),
       hazards: s.hazards.map((h) => ({ ...toN(h.x, h.y), t: h.t, life: h.life, ownerId: h.ownerId })),
       clones: s.clones.map((cl) => ({ ...toN(cl.x, cl.y), ownerId: cl.ownerId, fired: cl.fired, face: cl.face })),
+      warps: s.warps.map((w) => ({ ...toN(w.x, w.y), t: w.t, life: w.life, col: w.col, mode: w.mode })),
+      blastSquares: s.blastSquares.map((bq) => ({ ...toN(bq.x, bq.y), t: bq.t, life: bq.life, half: bq.half / (L.AR.w || 1), col: bq.col })),
     };
   }
 
@@ -1263,9 +1284,19 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       const pos = denormPos(cl.nx, cl.ny);
       const ownerId = cl.ownerId === 0 ? 1 : 0;
       return {
-        x: pos.x, y: pos.y, ownerId, id: ownerId, fired: cl.fired, hp: 10, maxHp: 10,
+        x: pos.x, y: pos.y, ownerId, id: ownerId, fired: cl.fired, hp: ENVOY_HP, maxHp: ENVOY_HP,
         face: cl.face, color: ownerId === 0 ? C.p1 : C.p2, flash: 0, frozen: 0, ammo: 0,
       };
+    });
+
+    s.warps = (payload.warps || []).map((w) => {
+      const pos = denormPos(w.nx, w.ny);
+      return { x: pos.x, y: pos.y, t: w.t, life: w.life, col: w.col, mode: w.mode };
+    });
+
+    s.blastSquares = (payload.blastSquares || []).map((bq) => {
+      const pos = denormPos(bq.nx, bq.ny);
+      return { x: pos.x, y: pos.y, t: bq.t, life: bq.life, half: bq.half * L.AR.w, col: bq.col };
     });
 
     s.shards = [];
@@ -1468,6 +1499,8 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
         s.items.forEach(remap);
         s.hazards.forEach(remap);
         s.clones.forEach(remap);
+        s.warps.forEach(remap);
+        s.blastSquares.forEach((bq) => { remap(bq); bq.half *= k; });
         s.bullets.forEach((b) => { remap(b); b.vx *= k; b.vy *= k; b.trail = []; });
       }
     });
@@ -1742,11 +1775,15 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               }
               if (landing) {
                 const owner = s.players[b.owner];
+                const fromX = owner.x, fromY = owner.y;
                 owner.x = clamp(landing.x, L.AR.x + L.PR, L.AR.x + L.AR.w - L.PR);
                 owner.y = clamp(landing.y, L.AR.y + L.PR, L.AR.y + L.AR.h - L.PR);
                 owner.tpBonusT = TP_BONUS_WINDOW;
+                const warpCol = owner.id === 0 ? C.p1 : C.p2;
+                s.warps.push({ x: fromX, y: fromY, t: 0, life: 0.4, col: warpCol, mode: "out" });
+                s.warps.push({ x: owner.x, y: owner.y, t: 0, life: 0.45, col: warpCol, mode: "in" });
                 spawnPoof(s, owner.x, owner.y, owner.id === 0 ? ["#ff8a72", "#ffdcd2"] : ["#72c9ff", "#d2ecff"],
-                  { count: 10, speed: [40, 140], life: [0.2, 0.36], size: [3, 5] });
+                  { count: 14, speed: [50, 170], life: [0.22, 0.4], size: [3, 6] });
                 dead = true;
               }
               continue;
@@ -1859,8 +1896,9 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
             if (cl.ownerId === hz.ownerId) continue;
             if (Math.abs(cl.x - hz.x) < half && Math.abs(cl.y - hz.y) < half) cl.hp = 0;
           }
-          s.booms.push({ x: hz.x, y: hz.y, t: 0, col: C.tnt, kind: "calamity" });
-          spawnPoof(s, hz.x, hz.y, [C.tnt, "#ffd7b0", "#fff2a8"], { count: 18, speed: [50, 190], life: [0.25, 0.45], size: [3, 6] });
+          const ownerCol = hz.ownerId === 0 ? C.p1 : C.p2;
+          s.blastSquares.push({ x: hz.x, y: hz.y, t: 0, life: 0.5, half, col: ownerCol });
+          spawnPoof(s, hz.x, hz.y, [ownerCol, "#fff2a8", "#ffffff"], { count: 18, speed: [50, 190], life: [0.25, 0.45], size: [3, 6] });
           s.shake = Math.max(s.shake, 16 * L.s);
           s.hazards.splice(i, 1);
         }
@@ -1916,6 +1954,14 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       for (let i = s.booms.length - 1; i >= 0; i--) {
         s.booms[i].t += dt;
         if (s.booms[i].t > 0.45) s.booms.splice(i, 1);
+      }
+      for (let i = s.warps.length - 1; i >= 0; i--) {
+        s.warps[i].t += dt;
+        if (s.warps[i].t > s.warps[i].life) s.warps.splice(i, 1);
+      }
+      for (let i = s.blastSquares.length - 1; i >= 0; i--) {
+        s.blastSquares[i].t += dt;
+        if (s.blastSquares[i].t > s.blastSquares[i].life) s.blastSquares.splice(i, 1);
       }
       for (let i = s.shards.length - 1; i >= 0; i--) {
         const f = s.shards[i];
@@ -2005,17 +2051,14 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           else if (p2a.hp > prevA.hp2) sfx.heal();
         }
         if (prevA.ammo1 === 0 && p1a.ammo === 1) sfx.pickup();
-        if (s.booms.length > prevA.boomCount) {
-          for (let bi = prevA.boomCount; bi < s.booms.length; bi++) {
-            sfx[s.booms[bi].kind === "calamity" ? "calamityBoom" : "explosion"]();
-          }
-        }
+        if (s.booms.length > prevA.boomCount) sfx.explosion();
+        if (s.blastSquares.length > prevA.blastCount) sfx.calamityBoom();
         if (prevA.winner === null && s.over !== null) { if (s.over === 0) sfx.win(); else sfx.lose(); }
         const envoyFiredCount = s.clones.filter((cl) => cl.fired).length;
         if (envoyFiredCount > prevA.envoyFiredCount) sfx.envoyFire();
         prevA.hp1 = p1a.hp; prevA.hp2 = p2a.hp;
         prevA.ammo1 = p1a.ammo; prevA.ammo2 = p2a.ammo;
-        prevA.boomCount = s.booms.length; prevA.winner = s.over;
+        prevA.boomCount = s.booms.length; prevA.blastCount = s.blastSquares.length; prevA.winner = s.over;
         prevA.envoyFiredCount = envoyFiredCount;
       }
 
@@ -2232,6 +2275,39 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
       ctx.beginPath();
       ctx.arc(b.x, b.y, L.EXPR * (0.4 + k), 0, 7);
       ctx.stroke();
+      ctx.restore();
+    }
+    for (const w of s.warps) {
+      const k = clamp(w.t / w.life, 0, 1);
+      const grow = w.mode === "out" ? 1 - k : k; // 出発は縮む、到着は広がる
+      ctx.save();
+      ctx.globalAlpha = (1 - k) * 0.9;
+      ctx.strokeStyle = w.col;
+      ctx.lineWidth = 3 * S;
+      for (let ring = 0; ring < 2; ring++) {
+        const r = L.PR * (0.6 + grow * (1.8 + ring * 0.8));
+        ctx.beginPath();
+        ctx.arc(w.x, w.y, r, 0, 7);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = (1 - k) * 0.5;
+      ctx.fillStyle = w.col;
+      ctx.beginPath();
+      ctx.arc(w.x, w.y, L.PR * (0.9 + grow * 0.6), 0, 7);
+      ctx.fill();
+      ctx.restore();
+    }
+    for (const bq of s.blastSquares) {
+      const k = clamp(bq.t / bq.life, 0, 1);
+      const grow = bq.half * (1 + k * 0.35);
+      ctx.save();
+      ctx.globalAlpha = 1 - k;
+      ctx.fillStyle = "#fff6c9";
+      ctx.fillRect(bq.x - bq.half * 0.5, bq.y - bq.half * 0.5, bq.half, bq.half);
+      ctx.globalAlpha = (1 - k) * 0.9;
+      ctx.strokeStyle = bq.col;
+      ctx.lineWidth = 7 * S * (1 - k) + 2;
+      ctx.strokeRect(bq.x - grow, bq.y - grow, grow * 2, grow * 2);
       ctx.restore();
     }
     for (const f of s.shards) {
@@ -2479,7 +2555,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
           className="absolute flex select-none items-center justify-center rounded-full"
           style={{
             left: `${weaponBtnPos.xFrac * 100}%`, top: `${weaponBtnPos.yFrac * 100}%`,
-            transform: "translate(-50%, -50%)", width: 74, height: 74,
+            transform: "translate(-50%, -50%)", width: weaponBtnPos.size, height: weaponBtnPos.size,
             background: "rgba(20,23,29,.85)",
             border: "2px solid rgba(255,255,255,.25)",
             touchAction: "none",
@@ -2491,7 +2567,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               background: `conic-gradient(rgba(0,0,0,.6) ${cdFrac * 360}deg, transparent ${cdFrac * 360}deg)`,
             }} />
           </div>
-          <span className="pointer-events-none" style={{ fontSize: 26, color: "#eef0f3" }}>
+          <span className="pointer-events-none" style={{ fontSize: weaponBtnPos.size * 0.35, color: "#eef0f3" }}>
             {WEAPON_META[perk].icon}
           </span>
           {knobActive && (
