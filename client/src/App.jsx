@@ -457,7 +457,7 @@ const CALAMITY_DMG = 60;
 const CALAMITY_HALF = 1.5; // 3x3マス分の半幅（マス単位。実際のpxはL.cell*これ）
 
 const ENVOY_CD = 8.0;
-const ENVOY_HP_COST = 10;
+const ENVOY_HP_COST = 16;
 const ENVOY_HP = 10;
 const ENVOY_DESPAWN = 0.5; // 発射してから消えるまで
 
@@ -468,7 +468,7 @@ const PERKS = [
   { id: "rocket", name: "トッテオキノワザ", desc: "タップ発射時のみ発動。2倍サイズ・2倍ダメージの弾を放つ。障害物には3回当たるか2.5秒経つまで消えない（同じTNTには再ヒットしない）。" },
   { id: "calamity", name: "ヤクサイ", desc: "特殊ボタン長押しで発動（クールタイム4秒。タップには反応しない）。タイル3×3を指定し、3秒後にその範囲へ60ダメージ。本人は無傷で、アイテムへの影響もない。" },
   { id: "berserk", name: "カジバノバカヂカラ", desc: "受けたダメージの割合ぶんだけ、足の速さと弾のダメージが上昇し続ける。ボロボロになるほど強くなる。" },
-  { id: "envoy", name: "ハジメテノオツカイ", desc: "特殊ボタンをタップした瞬間に発動（クールタイム8秒。狙いは不要）。体力を10消費し、自分そっくりの分身（体力10）を最寄りのミサイルへ向かわせる。分身はミサイルを取った瞬間に相手へ発射し、0.5秒後に消える。道中で撃たれるとその場で消える。" },
+  { id: "envoy", name: "ハジメテノオツカイ", desc: "特殊ボタンをタップした瞬間に発動（クールタイム8秒。狙いは不要）。体力を16消費し、自分そっくりの分身（体力10）を最寄りのミサイルへ向かわせる。分身はミサイルを取った瞬間に相手へ発射し、0.5秒後に消える。命中すれば与えた分の体力がそのまま戻ってくる（外すか道中で撃たれると消費した分は戻らない）。" },
 ];
 
 const WEAPON_META = {
@@ -1128,7 +1128,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
     if (p.hp <= ENVOY_HP_COST) return; // 自滅するほど体力が低ければ発動しない
     p.weaponCd = ENVOY_CD;
     p.hp = clamp(p.hp - ENVOY_HP_COST, 0, p.maxHp);
-    spawnDmgPopup(s, p.x, p.y, `-${ENVOY_HP_COST}`, "#ff6a5c");
+    spawnDmgPopup(s, p.x, p.y, `-${ENVOY_HP_COST}`, "#c98cff");
     s.clones.push({
       ownerId: p.id, id: p.id, x: p.x, y: p.y, hp: ENVOY_HP, maxHp: ENVOY_HP,
       fired: false, dyingT: -1, life: 0,
@@ -1803,6 +1803,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
                   }
                   dmg = Math.round(dmg * berserkMult(owner));
                   damage(s, p, dmg);
+                  if (b.fromClone && p.id !== owner.id) heal(s, owner, dmg); // 分身が当てた分は召喚者に戻ってくる（ノーリスク化）
                   p.ammo = 0;
                   const l = Math.hypot(b.vx, b.vy) || 1;
                   const kb = 200 * L.s * (b.kind === "rocket" ? 3 : 1);
@@ -1898,7 +1899,7 @@ function BattleScreen({ perk, peerPerk = null, ws, isHost = true, onExit, onRema
               y: cl.y + Math.sin(ang) * (L.PR + L.BR + 2),
               vx: Math.cos(ang) * L.BSPEED,
               vy: Math.sin(ang) * L.BSPEED,
-              t: 0, owner: cl.ownerId, trail: [], kind: "normal", obstacleHits: 0,
+              t: 0, owner: cl.ownerId, trail: [], kind: "normal", obstacleHits: 0, fromClone: true,
             });
             cl.fired = true;
             cl.dyingT = 0;
